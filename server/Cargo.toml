@@ -33,3 +33,5 @@ test=false
 name="main"
 test=false
 
+[lints.rust]
+unused_must_use = "forbid"

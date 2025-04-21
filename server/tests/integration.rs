@@ -51,7 +51,7 @@ async fn test_send_h264_stream() -> Result<()> {
         "video".to_string(),
         "webrtc-test".to_string(),
     ));
-    peer.add_track(track.clone()).await?;
+    let added_track = peer.add_track(track.clone()).await?;
 
     // Creates a data channel track and adds it to the peer. 
     let data_channel = peer.create_data_channel("general", None).await?;
@@ -112,6 +112,10 @@ async fn test_send_h264_stream() -> Result<()> {
         "Finished streaming file. Sent {} samples (nal units).",
         sample_count
     );
+
+    added_track.stop().await?;
+
+    // Wait for the server to receive and process the stream. Hm.
 
     peer.close().await?;
 

@@ -11,8 +11,10 @@ use gstreamer::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI8;
+use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, mpsc};
 use tokio::net::TcpListener;
+use tokio::sync::mpsc::Sender;
 use tracing::instrument;
 use tracing::{error, info};
 use webrtc::api::media_engine::MediaEngine;
@@ -22,6 +24,8 @@ use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp::codecs::h264::H264Packet;
 use webrtc::rtp::packetizer::Depacketizer;
+use webrtc::rtp_transceiver::RTCRtpTransceiver;
+use webrtc::rtp_transceiver::rtp_receiver::RTCRtpReceiver;
 use webrtc::track::track_remote::TrackRemote;
 
 #[derive(Clone)]
@@ -32,12 +36,33 @@ struct AppState {
     pub data_path: PathBuf,
 }
 
+#[derive(Clone)]
+struct SessionState {
+    pub client_channel: Sender<DataMessage>,
+    pub app_state: AppState,
+}
+
 /// The data type of messages that get passed back and forth across our data channel with the client.
 /// We can use this to control the client, to inform it of information, or to receive commands.
 #[derive(Serialize, Deserialize, Debug)]
 pub enum DataMessage {
     Info(String),
     Error(String),
+    ServerSignal(ServerSignal)
+}
+
+#[derive(Serialize, Deserialize, Debug)]
+pub enum ServerSignal {
+    VideoStreamComplete
+}
+
+impl<E> From<E> for DataMessage
+where
+    E: Into<anyhow::Error>,
+{
+    fn from(value: E) -> Self {
+        DataMessage::Error(format!("{}", value.into()))
+    }
 }
 
 /// Server-side state that lives while a specific session is being recorded.
@@ -91,6 +116,12 @@ async fn whip_post_handler(
 
     let session_id = query.session_id;
 
+    let (tx, rx) = tokio::sync::mpsc::channel::<DataMessage>(100);
+    let session_state = SessionState {
+        client_channel: tx.clone(),
+        app_state: state.clone(),
+    };
+
     // todo: Verify this session_id hasn't already been created. Some kind of disk file to represent it?
 
     let config = RTCConfiguration {
@@ -103,10 +134,7 @@ async fn whip_post_handler(
         .await
         .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
 
-    let track_index = AtomicI8::new(0);
-
     // Send anything to this channel you want sent to the client via our data channel.
-    let (tx, rx) = tokio::sync::mpsc::channel::<DataMessage>(100);
     tx.send(DataMessage::Info("Data channel connected!".into()))
         .await?;
 
@@ -153,6 +181,26 @@ async fn whip_post_handler(
         Box::pin(async {})
     }));
 
+    let track_index = AtomicI8::new(0);
+    peer.on_track(Box::new(
+        move |track: Arc<TrackRemote>,
+              _receiver: Arc<RTCRtpReceiver>,
+              _tranceiver: Arc<RTCRtpTransceiver>| {
+            let index = track_index.fetch_add(1, SeqCst);
+            let sess_id = session_id.clone();
+            let state = session_state.clone();
+            let tx = tx.clone();
+            Box::pin(async move {
+                if let Err(err) = handle_track(index, track, &sess_id, state).await {
+                    let _ = tx
+                        .send(DataMessage::from(err))
+                        .await
+                        .map_err(|err| error!("{}", err));
+                }
+            })
+        },
+    ));
+
     let offer = RTCSessionDescription::offer(body)?;
     peer.set_remote_description(offer).await?;
 
@@ -176,21 +224,26 @@ async fn whip_post_handler(
         .header(header::CONTENT_TYPE, "application/sdp")
         .body(local_description.sdp)?)
 }
+
+/// Handles video tracks that the client sends to us.
 async fn handle_track<'a>(
     track_id: i8,
     track: Arc<TrackRemote>,
     session_id: &'a str,
-    app_state: AppState,
+    session_state: SessionState,
 ) -> anyhow::Result<()> {
-    info!(session_id = %session_id, track_id = %track.id(), kind = ?track.kind(), "Track connected");
+    info!(session_id = %session_id, track_id = %track.id(), kind = ?track.kind(), "Track connected.");
 
     let codec = track.codec();
     let mime_type = codec.capability.mime_type.to_lowercase();
-    info!(%mime_type, clock_rate = codec.capability.clock_rate, "Track codec details");
+    info!(%mime_type, clock_rate = codec.capability.clock_rate, "Track codec details.");
 
     ensure!(
-        mime_type.as_str() == media_engine::MIME_TYPE_H264,
-        "Video tracks must be in H264 format."
+        mime_type
+            .as_str()
+            .eq_ignore_ascii_case(media_engine::MIME_TYPE_H264),
+        "Video tracks must be in H264 format. [{}]",
+        mime_type
     );
 
     // Depacketize using h264writer.
@@ -204,7 +257,8 @@ async fn handle_track<'a>(
     let mut depacketizer = H264Packet::default();
 
     // Initialize GStreamer
-    gstreamer::init().unwrap();
+    gstreamer::init()?;
+    info!("Initializing GStreamer pipeline for track {track_id}.");
 
     // Build the GStreamer pipeline
     let pipeline_str = format!(
@@ -233,23 +287,32 @@ async fn handle_track<'a>(
 
     info!("Started gstreamer pipeline: {:?}", pipeline);
 
-    tokio::spawn(async move {
-        while let Ok((packet, _)) = track.read_rtp().await {
-            let bytes = depacketizer.depacketize(&packet.payload).unwrap();
+    session_state
+        .client_channel
+        .send(DataMessage::Info("Video stream connected. Streaming begin.".into()))
+        .await?;
 
-            // Create a GStreamer buffer from the H.264 data
-            let buffer = gstreamer::Buffer::from_slice(bytes);
+    while let Ok((packet, _)) = track.read_rtp().await {
+        let bytes = depacketizer.depacketize(&packet.payload)?;
 
-            // Push the buffer into the pipeline
-            let _ = appsrc.push_buffer(buffer);
-        }
+        // Create a GStreamer buffer from the H.264 data
+        let buffer = gstreamer::Buffer::from_slice(bytes);
 
-        // Signal end of stream
-        appsrc.end_of_stream().unwrap();
+        // Push the buffer into the pipeline
+        let _ = appsrc.push_buffer(buffer);
+    }
 
-        // Wait for the pipeline to finish
-        pipeline.set_state(gstreamer::State::Null).unwrap();
-    });
+    session_state
+        .client_channel
+        .send(DataMessage::Info("Video stream closed.".into()))
+        .await?;
+
+    // Signal end of stream
+    appsrc.end_of_stream()?;
+
+    // Wait for the pipeline to finish
+    pipeline.set_state(gstreamer::State::Null).unwrap();
+
 
     Ok(())
 
