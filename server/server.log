@@ -1,0 +1,71 @@
+warning: unused import: `Context`
+ --> src/main.rs:1:14
+  |
+1 | use anyhow::{Context, ensure};
+  |              ^^^^^^^
+  |
+  = note: `#[warn(unused_imports)]` on by default
+
+warning: unused variable: `app_state`
+   --> src/main.rs:142:5
+    |
+142 |     app_state: AppState,
+    |     ^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_app_state`
+    |
+    = note: `#[warn(unused_variables)]` on by default
+
+warning: unused variable: `args`
+  --> src/main.rs:50:9
+   |
+50 |     let args = CommandLineArgs::parse();
+   |         ^^^^ help: if this is intentional, prefix it with an underscore: `_args`
+
+warning: unused variable: `s`
+   --> src/main.rs:270:13
+    |
+270 |         let s = msg.clone();
+    |             ^ help: if this is intentional, prefix it with an underscore: `_s`
+
+warning: enum `TrackType` is never used
+  --> src/main.rs:34:6
+   |
+34 | enum TrackType {
+   |      ^^^^^^^^^
+   |
+   = note: `#[warn(dead_code)]` on by default
+
+warning: field `data_path` is never read
+  --> src/main.rs:43:9
+   |
+40 | struct AppState {
+   |        -------- field in this struct
+...
+43 |     pub data_path: PathBuf,
+   |         ^^^^^^^^^
+   |
+   = note: `AppState` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: variable `peerConnection` should have a snake case name
+  --> src/main.rs:94:9
+   |
+94 |     let peerConnection = state
+   |         ^^^^^^^^^^^^^^ help: convert the identifier to snake case: `peer_connection`
+   |
+   = note: `#[warn(non_snake_case)]` on by default
+
+warning: call to `.clone()` on a reference in this situation does nothing
+   --> src/main.rs:270:20
+    |
+270 |         let s = msg.clone();
+    |                    ^^^^^^^^ help: remove this redundant call
+    |
+    = note: the type `str` does not implement `Clone`, so calling `clone` on `&str` copies the reference, which does not do anything and can be removed
+    = note: `#[warn(noop_method_call)]` on by default
+
+warning: `server` (bin "server") generated 8 warnings (run `cargo fix --bin "server"` to apply 2 suggestions)
+    Finished `dev` profile [unoptimized + debuginfo] target(s) in 0.52s
+     Running `target/debug/server`
+
+thread 'main' panicked at src/main.rs:63:57:
+called `Result::unwrap()` on an `Err` value: Os { code: 48, kind: AddrInUse, message: "Address already in use" }
+note: run with `RUST_BACKTRACE=1` environment variable to display a backtrace
