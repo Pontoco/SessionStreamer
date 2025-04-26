@@ -1,14 +1,14 @@
-use anyhow::{anyhow, Result};
+use anyhow::{Result, anyhow};
 use axum_test::TestServer;
 use server::DataMessage;
-use tokio::sync::watch;
-use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
-use webrtc::peer_connection::RTCPeerConnection;
 use std::sync::Mutex;
 use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc, time::Duration};
 use test_log::test;
+use tokio::sync::watch;
 use webrtc::api::media_engine;
+use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
 use webrtc::media::io::h264_reader;
+use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::{
     api::{
         APIBuilder, interceptor_registry::register_default_interceptors, media_engine::MediaEngine,
@@ -22,7 +22,7 @@ use webrtc::{
     track::track_local::track_local_static_sample::TrackLocalStaticSample,
 };
 
-// This test creates a local webrtc client and streams an h264 file to the server as if it were a game 
+// This test creates a local webrtc client and streams an h264 file to the server as if it were a game
 // session.
 #[test(tokio::test)]
 async fn test_send_h264_stream() -> Result<()> {
@@ -53,9 +53,9 @@ async fn test_send_h264_stream() -> Result<()> {
     ));
     let added_track = peer.add_track(track.clone()).await?;
 
-    // Creates a data channel track and adds it to the peer. 
+    // Creates a data channel track and adds it to the peer.
     let data_channel = peer.create_data_channel("general", None).await?;
-    let data_logs : Arc<Mutex<Vec<DataMessage>>> = Arc::new(Mutex::new(vec![]));
+    let data_logs: Arc<Mutex<Vec<DataMessage>>> = Arc::new(Mutex::new(vec![]));
 
     let d = data_logs.clone();
     data_channel.on_message(Box::new(move |message| {
@@ -115,7 +115,7 @@ async fn test_send_h264_stream() -> Result<()> {
 
     added_track.stop().await?;
 
-    // Wait for the server to receive and process the stream. Hm.
+    // Wait for the server to send a SessionComplete message.
 
     peer.close().await?;
 
@@ -129,6 +129,9 @@ async fn test_send_h264_stream() -> Result<()> {
             DataMessage::Info(info) => {
                 println!("Received info from server: {}", info);
             }
+            DataMessage::ServerSignal(server_signal) => {
+                println!("Received signal from server: {:?}", server_signal);
+            }
         }
     }
 
@@ -136,9 +139,9 @@ async fn test_send_h264_stream() -> Result<()> {
 }
 
 /// Waits for the ICE connection to complete, meaning we are ready to be able to stream frames of video on the track.
-fn wait_for_ice_connection(pc: Arc<RTCPeerConnection>)
-    -> impl Future<Output = Result<()>> + Send + 'static
-{
+fn wait_for_ice_connection(
+    pc: Arc<RTCPeerConnection>,
+) -> impl Future<Output = Result<()>> + Send + 'static {
     // Create a watch channel initialized with the current state
     let (tx, mut rx) = watch::channel(pc.ice_connection_state());
 
@@ -158,10 +161,13 @@ fn wait_for_ice_connection(pc: Arc<RTCPeerConnection>)
                 RTCIceConnectionState::Connected | RTCIceConnectionState::Completed => {
                     return Ok(());
                 }
-                RTCIceConnectionState::Failed |
-                RTCIceConnectionState::Disconnected |
-                RTCIceConnectionState::Closed => {
-                    return Err(anyhow!("ICE connection reached terminal state: {:?}", *rx.borrow()));
+                RTCIceConnectionState::Failed
+                | RTCIceConnectionState::Disconnected
+                | RTCIceConnectionState::Closed => {
+                    return Err(anyhow!(
+                        "ICE connection reached terminal state: {:?}",
+                        *rx.borrow()
+                    ));
                 }
                 _ => {} // Other states (New, Checking) - wait for change
             }
@@ -170,7 +176,9 @@ fn wait_for_ice_connection(pc: Arc<RTCPeerConnection>)
             if rx.changed().await.is_err() {
                 // Error means sender (callback closure) was dropped, likely because
                 // the PeerConnection was closed.
-                return Err(anyhow!("PeerConnection closed while waiting for ICE connection"));
+                return Err(anyhow!(
+                    "PeerConnection closed while waiting for ICE connection"
+                ));
             }
         }
     }

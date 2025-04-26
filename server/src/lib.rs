@@ -53,7 +53,7 @@ pub enum DataMessage {
 
 #[derive(Serialize, Deserialize, Debug)]
 pub enum ServerSignal {
-    VideoStreamComplete
+    SessionComplete // Sent to the client when the session finishes and all the data is written.
 }
 
 impl<E> From<E> for DataMessage
