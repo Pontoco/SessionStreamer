@@ -104,7 +104,7 @@ struct QueryParams {
     pub session_id: String,
 }
 
-#[instrument("server_async", skip_all)]
+#[instrument("server", skip_all)]
 #[axum::debug_handler]
 async fn whip_post_handler(
     State(state): State<AppState>,

@@ -6,7 +6,7 @@ use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc, time::Duration};
 use test_log::test;
 use tokio::sync::{mpsc, watch};
 use tokio::time::timeout;
-use tracing::{info, info_span, instrument, Instrument, Level};
+use tracing::{info, info_span, instrument, Instrument, Level, Span};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -42,9 +42,9 @@ async fn test_send_h264_stream() -> Result<()> {
         .with(fmt_layer)
         .init();
 
-    async {
-        let app = TestServer::new(server::create_server()?)?;
+    let app = TestServer::new(server::create_server()?)?;
 
+    async {
         info!("created test server");
 
         // Default API setup.
@@ -82,14 +82,16 @@ async fn test_send_h264_stream() -> Result<()> {
         let data_channel = peer.create_data_channel("general", None).await?;
         let (data_tx, mut data_rx) = mpsc::unbounded_channel();
 
+        let span = Span::current().clone();
         data_channel.on_message(Box::new(move |message| {
             let data_tx = data_tx.clone();
+            let span = span.clone();
             Box::pin(async move {
                 let string = String::from_utf8(message.data.to_vec()).unwrap();
                 let data = serde_json::from_str(&string).unwrap();
                 info!("Received message from server: {:?}", data);
                 data_tx.send(data).unwrap();
-            })
+            }.instrument(span))
         }));
 
         info!("creating offer.");
@@ -167,7 +169,7 @@ async fn test_send_h264_stream() -> Result<()> {
         .await??;
 
         Ok(())
-    }.instrument(info_span!("running_test")).await
+    }.instrument(info_span!("integration_test")).await
 }
 
 /// Waits for the ICE connection to complete, meaning we are ready to be able to stream frames of video on the track.
