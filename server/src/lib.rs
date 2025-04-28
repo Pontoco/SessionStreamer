@@ -1,3 +1,5 @@
+mod webrtc_utils;
+
 use anyhow::{Result, ensure};
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
@@ -5,28 +7,26 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
-use clap::Parser;
-use clap::arg;
 use gstreamer::prelude::*;
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI8;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, mpsc};
-use tokio::net::TcpListener;
-use tokio::sync::mpsc::Sender;
-use tracing::instrument;
+use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::sync::{Mutex, Notify};
+use tracing::{Instrument, info_span, instrument};
 use tracing::{error, info};
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::{APIBuilder, interceptor_registry, media_engine};
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp::codecs::h264::H264Packet;
 use webrtc::rtp::packetizer::Depacketizer;
-use webrtc::rtp_transceiver::RTCRtpTransceiver;
-use webrtc::rtp_transceiver::rtp_receiver::RTCRtpReceiver;
 use webrtc::track::track_remote::TrackRemote;
+use webrtc_utils::StatefulPeerConnection;
 
 #[derive(Clone)]
 struct AppState {
@@ -38,8 +38,12 @@ struct AppState {
 
 #[derive(Clone)]
 struct SessionState {
-    pub client_channel: Sender<DataMessage>,
+    pub client_send: Sender<DataMessage>,
+    pub client_recv: Arc<Mutex<Option<Receiver<DataMessage>>>>,
+    pub connection_closed: Arc<Notify>,
     pub app_state: AppState,
+    pub track_id: Arc<AtomicI8>,
+    pub session_id: String,
 }
 
 /// The data type of messages that get passed back and forth across our data channel with the client.
@@ -48,12 +52,12 @@ struct SessionState {
 pub enum DataMessage {
     Info(String),
     Error(String),
-    ServerSignal(ServerSignal)
+    ServerSignal(ServerSignal),
 }
 
-#[derive(Serialize, Deserialize, Debug)]
+#[derive(PartialEq, Serialize, Deserialize, Debug)]
 pub enum ServerSignal {
-    SessionComplete // Sent to the client when the session finishes and all the data is written.
+    SessionComplete, // Sent to the client when the streaming is complete.
 }
 
 impl<E> From<E> for DataMessage
@@ -100,7 +104,7 @@ struct QueryParams {
     pub session_id: String,
 }
 
-#[instrument(skip_all)]
+#[instrument("server_async", skip_all)]
 #[axum::debug_handler]
 async fn whip_post_handler(
     State(state): State<AppState>,
@@ -114,12 +118,17 @@ async fn whip_post_handler(
         "Content-Type must be application/sdp.",
     )?;
 
-    let session_id = query.session_id;
+    let (client_send, client_recv) = tokio::sync::mpsc::channel::<DataMessage>(100);
 
-    let (tx, rx) = tokio::sync::mpsc::channel::<DataMessage>(100);
+    let connection_closed = Arc::new(Notify::new());
+
     let session_state = SessionState {
-        client_channel: tx.clone(),
+        client_send: client_send.clone(),
+        client_recv: Arc::new(Mutex::new(Some(client_recv))),
         app_state: state.clone(),
+        connection_closed: connection_closed.clone(),
+        track_id: Arc::new(AtomicI8::new(0)),
+        session_id: query.session_id,
     };
 
     // todo: Verify this session_id hasn't already been created. Some kind of disk file to represent it?
@@ -134,72 +143,76 @@ async fn whip_post_handler(
         .await
         .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
 
+    let peer = StatefulPeerConnection::new(peer, session_state.clone());
+
     // Send anything to this channel you want sent to the client via our data channel.
-    tx.send(DataMessage::Info("Data channel connected!".into()))
+    session_state
+        .client_send
+        .send(DataMessage::Info("Data channel connected!".into()))
         .await?;
 
-    let mut rx_slot = Some(rx);
+    peer.on_peer_connection_state_change(async |state, conn_state| {
+        info!("Server peer connection state changed: {:?}", conn_state);
+        if conn_state == RTCPeerConnectionState::Closed
+            || conn_state == RTCPeerConnectionState::Disconnected
+        {
+            state.connection_closed.notify_waiters();
+        }
+    });
 
     // Wait for the 'general' data channel to connect and receive messages on the other end of the above channel.
-    peer.on_data_channel(Box::new(move |channel| {
+    peer.on_data_channel(async |state, channel| {
+        let span = info_span!("on_data_channel");
+        let _ = span.enter();
+
         info!("Data channel connected: {}", &channel.label());
 
         if channel.label() != "general" {
             error!("Unexpected data channel [{}]", channel.label());
-            return Box::pin(async {});
+            return;
         }
 
-        if let Some(mut rx) = rx_slot.take() {
+        if let Some(mut rx) = state.client_recv.lock().await.take() {
             // Make sure to log any errors with the data channel.
-            channel.on_error(Box::new(|error| {
-                Box::pin(async move {
-                    error!("Data channel had error: {}", error);
-                })
-            }));
+            channel.on_error(async |_, error| {
+                error!("Data channel had error: {}", error);
+            });
 
-            let sender = channel.clone();
-            channel.on_open(Box::new(move || {
-                Box::pin(async move {
-                    // Our primary 'send stuff to the client' channel.
-                    while let Some(data) = rx.recv().await {
-                        match serde_json::to_string(&data) {
-                            Ok(json) => match sender.send_text(json).await {
-                                Ok(_) => info!("Sent message to client [{:?}]", &data),
-                                Err(err) => error!("Error sending message to client [{}]", err),
-                            },
-                            Err(err) => {
-                                error!("Failed to serialize data message. {} {:?}", err, data)
-                            }
+            channel.on_open(async move |_, channel| {
+                // Our primary 'send stuff to the client' channel.
+                while let Some(data) = rx.recv().await {
+                    match serde_json::to_string(&data) {
+                        Ok(json) => match channel.send_text(json).await {
+                            Ok(_) => info!("Sent message to client [{:?}]", &data),
+                            Err(err) => error!("Error sending message to client [{}]", err),
+                        },
+                        Err(err) => {
+                            error!("Failed to serialize data message. {} {:?}", err, data)
                         }
                     }
-                })
-            }));
+                }
+            });
         } else {
             error!("Data channel already initialized [{}]", channel.label());
         }
+    });
 
-        Box::pin(async {})
-    }));
+    peer.on_track(async |mut state, track, _, _| {
+        let result = handle_track(
+            state.track_id.fetch_add(1, SeqCst),
+            track,
+            "sessionid",
+            &mut state,
+        );
 
-    let track_index = AtomicI8::new(0);
-    peer.on_track(Box::new(
-        move |track: Arc<TrackRemote>,
-              _receiver: Arc<RTCRtpReceiver>,
-              _tranceiver: Arc<RTCRtpTransceiver>| {
-            let index = track_index.fetch_add(1, SeqCst);
-            let sess_id = session_id.clone();
-            let state = session_state.clone();
-            let tx = tx.clone();
-            Box::pin(async move {
-                if let Err(err) = handle_track(index, track, &sess_id, state).await {
-                    let _ = tx
-                        .send(DataMessage::from(err))
-                        .await
-                        .map_err(|err| error!("{}", err));
-                }
-            })
-        },
-    ));
+        if let Err(err) = result.await {
+            let _ = state
+                .client_send
+                .send(DataMessage::from(err))
+                .await
+                .map_err(|err| error!("{}", err));
+        }
+    });
 
     let offer = RTCSessionDescription::offer(body)?;
     peer.set_remote_description(offer).await?;
@@ -226,11 +239,12 @@ async fn whip_post_handler(
 }
 
 /// Handles video tracks that the client sends to us.
+#[instrument(name = "handle_track", skip_all)]
 async fn handle_track<'a>(
     track_id: i8,
     track: Arc<TrackRemote>,
     session_id: &'a str,
-    session_state: SessionState,
+    session_state: &mut SessionState,
 ) -> anyhow::Result<()> {
     info!(session_id = %session_id, track_id = %track.id(), kind = ?track.kind(), "Track connected.");
 
@@ -288,22 +302,41 @@ async fn handle_track<'a>(
     info!("Started gstreamer pipeline: {:?}", pipeline);
 
     session_state
-        .client_channel
-        .send(DataMessage::Info("Video stream connected. Streaming begin.".into()))
+        .client_send
+        .send(DataMessage::Info(
+            "Video stream connected. Streaming begin.".into(),
+        ))
         .await?;
 
-    while let Ok((packet, _)) = track.read_rtp().await {
-        let bytes = depacketizer.depacketize(&packet.payload)?;
+    loop {
+        tokio::select! {
+            data = track.read_rtp() => {
+                match data {
+                    Ok((packet, _)) => {
+                        let bytes = depacketizer.depacketize(&packet.payload)?;
 
-        // Create a GStreamer buffer from the H.264 data
-        let buffer = gstreamer::Buffer::from_slice(bytes);
+                        // Create a GStreamer buffer from the H.264 data
+                        let buffer = gstreamer::Buffer::from_slice(bytes);
 
-        // Push the buffer into the pipeline
-        let _ = appsrc.push_buffer(buffer);
+                        // Push the buffer into the pipeline
+                        let _ = appsrc.push_buffer(buffer);
+                    }
+                    Err(err) => {
+                        error!("{:?}", err);
+                        break;
+                    }
+                }
+            }
+            _ = session_state.connection_closed.notified() => {
+                break;
+            }
+        }
     }
 
+    info!("Video track closed.");
+
     session_state
-        .client_channel
+        .client_send
         .send(DataMessage::Info("Video stream closed.".into()))
         .await?;
 
@@ -312,7 +345,6 @@ async fn handle_track<'a>(
 
     // Wait for the pipeline to finish
     pipeline.set_state(gstreamer::State::Null).unwrap();
-
 
     Ok(())
 
