@@ -38,40 +38,42 @@ struct AppState {
 
 #[derive(Clone)]
 struct SessionState {
-    pub client_send: Sender<DataMessage>,
-    pub client_recv: Arc<Mutex<Option<Receiver<DataMessage>>>>,
+    pub client_send_tx: Sender<ServerMessage>,
+    pub client_send_rx: Arc<Mutex<Option<Receiver<ServerMessage>>>>,
     pub connection_closed: Arc<Notify>,
     pub app_state: AppState,
     pub track_id: Arc<AtomicI8>,
     pub session_id: String,
 }
 
-/// The data type of messages that get passed back and forth across our data channel with the client.
+/// Sent from the server to control or inform the client.
 /// We can use this to control the client, to inform it of information, or to receive commands.
 #[derive(Serialize, Deserialize, Debug)]
-pub enum DataMessage {
+pub enum ServerMessage {
     Info(String),
     Error(String),
-    ServerSignal(ServerSignal),
+    SessionComplete, // Sent to the client when the streaming is complete and all files are fully saved to disk.
 }
 
+/// Sent from the client to inform the server. Usually these are best effort, since the client can
+/// disappear at any time.
 #[derive(PartialEq, Serialize, Deserialize, Debug)]
-pub enum ServerSignal {
-    SessionComplete, // Sent to the client when the streaming is complete.
+pub enum ClientMessage {
+    SessionEnding, // Sent when the client is done sending video for the session.
 }
 
-impl<E> From<E> for DataMessage
+impl<E> From<E> for ServerMessage
 where
     E: Into<anyhow::Error>,
 {
     fn from(value: E) -> Self {
-        DataMessage::Error(format!("{}", value.into()))
+        ServerMessage::Error(format!("{}", value.into()))
     }
 }
 
 /// Server-side state that lives while a specific session is being recorded.
 struct Session {
-    pub client_data_send: mpsc::Sender<DataMessage>,
+    pub client_data_send: mpsc::Sender<ServerMessage>,
 }
 
 pub fn create_server() -> Result<axum::Router> {
@@ -118,13 +120,13 @@ async fn whip_post_handler(
         "Content-Type must be application/sdp.",
     )?;
 
-    let (client_send, client_recv) = tokio::sync::mpsc::channel::<DataMessage>(100);
+    let (client_send, client_send_rx) = tokio::sync::mpsc::channel::<ServerMessage>(100);
 
     let connection_closed = Arc::new(Notify::new());
 
     let session_state = SessionState {
-        client_send: client_send.clone(),
-        client_recv: Arc::new(Mutex::new(Some(client_recv))),
+        client_send_tx: client_send.clone(),
+        client_send_rx: Arc::new(Mutex::new(Some(client_send_rx))),
         app_state: state.clone(),
         connection_closed: connection_closed.clone(),
         track_id: Arc::new(AtomicI8::new(0)),
@@ -147,8 +149,8 @@ async fn whip_post_handler(
 
     // Send anything to this channel you want sent to the client via our data channel.
     session_state
-        .client_send
-        .send(DataMessage::Info("Data channel connected!".into()))
+        .client_send_tx
+        .send(ServerMessage::Info("Data channel connected!".into()))
         .await?;
 
     peer.on_peer_connection_state_change(async |state, conn_state| {
@@ -172,7 +174,7 @@ async fn whip_post_handler(
             return;
         }
 
-        if let Some(mut rx) = state.client_recv.lock().await.take() {
+        if let Some(mut rx) = state.client_send_rx.lock().await.take() {
             // Make sure to log any errors with the data channel.
             channel.on_error(async |_, error| {
                 error!("Data channel had error: {}", error);
@@ -192,6 +194,17 @@ async fn whip_post_handler(
                     }
                 }
             });
+
+            channel.on_message(async |state, msg| {
+                match serde_json::from_slice::<ClientMessage>(&msg.data) {
+                    Err(e) => error!("Client did not send valid ClientMessage JSON. [{}]", e),
+                    Ok(msg) => match msg {
+                        ClientMessage::SessionEnding => {
+                            state.connection_closed.notify_waiters();
+                        }
+                    },
+                };
+            });
         } else {
             error!("Data channel already initialized [{}]", channel.label());
         }
@@ -207,8 +220,8 @@ async fn whip_post_handler(
 
         if let Err(err) = result.await {
             let _ = state
-                .client_send
-                .send(DataMessage::from(err))
+                .client_send_tx
+                .send(ServerMessage::from(err))
                 .await
                 .map_err(|err| error!("{}", err));
         }
@@ -302,8 +315,8 @@ async fn handle_track<'a>(
     info!("Started gstreamer pipeline: {:?}", pipeline);
 
     session_state
-        .client_send
-        .send(DataMessage::Info(
+        .client_send_tx
+        .send(ServerMessage::Info(
             "Video stream connected. Streaming begin.".into(),
         ))
         .await?;
@@ -336,8 +349,8 @@ async fn handle_track<'a>(
     info!("Video track closed.");
 
     session_state
-        .client_send
-        .send(DataMessage::Info("Video stream closed.".into()))
+        .client_send_tx
+        .send(ServerMessage::Info("Video stream closed.".into()))
         .await?;
 
     // Signal end of stream
@@ -345,6 +358,11 @@ async fn handle_track<'a>(
 
     // Wait for the pipeline to finish
     pipeline.set_state(gstreamer::State::Null).unwrap();
+
+    session_state
+        .client_send_tx
+        .send(ServerMessage::SessionComplete)
+        .await?;
 
     Ok(())
 

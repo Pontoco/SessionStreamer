@@ -1,6 +1,6 @@
 use anyhow::{Result, anyhow};
 use axum_test::TestServer;
-use server::{DataMessage, ServerSignal};
+use server::{ClientMessage, ServerMessage};
 use std::sync::Mutex;
 use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc, time::Duration};
 use test_log::test;
@@ -148,6 +148,8 @@ async fn test_send_h264_stream() -> Result<()> {
 
         info!("Closing client peer connection");
 
+        data_channel.send_text(serde_json::to_string(&ClientMessage::SessionEnding)?).await?;
+
         added_track.stop().await?;
         peer.remove_track(&added_track).await?;
         // peer.close().await?;
@@ -155,12 +157,10 @@ async fn test_send_h264_stream() -> Result<()> {
         println!("Waiting for server to send a SessionComplete message..");
 
         // Wait for the server to send a SessionComplete message.
-        timeout(Duration::from_secs(30), async move {
+        timeout(Duration::from_secs(5), async move {
             while let Some(msg) = data_rx.recv().await {
-                if let DataMessage::ServerSignal(signal) = msg {
-                    if signal == ServerSignal::SessionComplete {
-                        return Ok(());
-                    }
+                if let ServerMessage::SessionComplete = msg {
+                    return Ok(());
                 }
             }
 

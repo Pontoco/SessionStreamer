@@ -5,9 +5,9 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{Instrument, Span, info_span};
 use webrtc::{
-    data_channel::RTCDataChannel,
-    peer_connection::{RTCPeerConnection, peer_connection_state::RTCPeerConnectionState},
-    rtp_transceiver::{RTCRtpTransceiver, rtp_receiver::RTCRtpReceiver},
+    data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel},
+    peer_connection::{peer_connection_state::RTCPeerConnectionState, RTCPeerConnection},
+    rtp_transceiver::{rtp_receiver::RTCRtpReceiver, RTCRtpTransceiver},
     track::track_remote::TrackRemote,
 };
 
@@ -166,6 +166,19 @@ where
         let span = Span::current();
         let state = self.state.clone();
         self.data_channel.on_error(Box::new(move |error| {
+            let fut = handler(state.clone(), error).instrument(span.clone());
+            Box::pin(async move { fut.await })
+        }));
+    }
+
+    pub fn on_message<F, Fut>(&self, mut handler: F)
+    where
+        F: FnMut(T, DataChannelMessage) -> Fut + Send + Sync + 'static,
+        Fut: Future<Output = ()> + Send + 'static,
+    {
+        let span = Span::current();
+        let state = self.state.clone();
+        self.data_channel.on_message(Box::new(move |error| {
             let fut = handler(state.clone(), error).instrument(span.clone());
             Box::pin(async move { fut.await })
         }));
