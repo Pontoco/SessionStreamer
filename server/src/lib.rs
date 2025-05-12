@@ -7,8 +7,14 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
-use gstreamer::prelude::*;
+use gstreamer::{prelude::*, MessageType};
+use h264_reader::annexb::AnnexBReader;
+use h264_reader::nal::{Nal, RefNal};
+use h264_reader::push::NalInterest;
 use serde::{Deserialize, Serialize};
+use tokio_stream::StreamExt;
+use webrtc::util::Marshal;
+use std::io::Read;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI8;
 use std::sync::atomic::Ordering::SeqCst;
@@ -23,7 +29,7 @@ use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
-use webrtc::rtp::codecs::h264::H264Packet;
+use webrtc::rtp::codecs::h264::{self, H264Packet};
 use webrtc::rtp::packetizer::Depacketizer;
 use webrtc::track::track_remote::TrackRemote;
 use webrtc_utils::StatefulPeerConnection;
@@ -281,16 +287,31 @@ async fn handle_track<'a>(
     // Send that data and samples to our mp4 *writer*. Buuuut tbh, that's a fuckup because now we're re-encoding it I think? Ugh.
     // Nvm. We're not reencoding, just stuffing these samples somehow into
 
-    let mut depacketizer = H264Packet::default();
 
     // Initialize GStreamer
     gstreamer::init()?;
     info!("Initializing GStreamer pipeline for track {track_id}.");
 
     // Build the GStreamer pipeline
-    let pipeline_str = format!(
-        "appsrc name=appsrc ! h264parse ! mp4mux ! filesink location=output_{track_id}.mp4"
+    //  - Feed in raw RTP packets from WebRTC
+    // .- Parse h264 out of it.
+    //  - Output to MP4
+    let codec_params = track.codec();
+    let clock_rate = codec_params.capability.clock_rate;
+    let rtp_payload_type = codec_params.payload_type;
+
+    let rtp_caps_str = format!(
+        "application/x-rtp,media=video,clock-rate={},encoding-name=H264,payload={}",
+        clock_rate, rtp_payload_type
     );
+
+    let pipeline_str = format!(
+        "appsrc name=appsrc ! {} ! rtph264depay ! h264parse ! mp4mux name=mux ! filesink location=output_{}.mp4",
+        rtp_caps_str, track_id
+    );
+
+    info!("Starting pipeline [{}]", &pipeline_str);
+
     let pipeline = gstreamer::parse_launch(&pipeline_str)
         .unwrap()
         .downcast::<gstreamer::Pipeline>()
@@ -304,15 +325,61 @@ async fn handle_track<'a>(
         .unwrap();
 
     // Configure the appsrc
-    let caps = gstreamer::Caps::builder("video/x-h264").build();
-    appsrc.set_caps(Some(&caps));
+    appsrc.set_format(gstreamer::Format::Bytes); 
     appsrc.set_stream_type(gstreamer_app::AppStreamType::Stream);
-    appsrc.set_format(gstreamer::Format::Time);
 
     // Start the pipeline
     pipeline.set_state(gstreamer::State::Playing).unwrap();
 
     info!("Started gstreamer pipeline: {:?}", pipeline);
+
+    // In handle_track, after starting the pipeline:
+    let bus = pipeline.bus().expect("Failed to get pipeline bus");
+    let pipeline_weak = pipeline.downgrade(); // To avoid owning pipeline in the task
+
+    tokio::spawn(async move {
+        let mut bus_stream = bus.stream();
+        while let Some(msg) = bus_stream.next().await {
+            
+            if pipeline_weak.upgrade().is_none() {
+                info!("Pipeline for bus monitoring no longer exists, exiting bus watch.");
+                break;
+            }
+            match msg.view() {
+                gstreamer::MessageView::Error(err) => {
+                    error!(
+                        "GStreamer Error from {}: {} ({:?})",
+                        err.src()
+                            .map_or_else(|| "None".to_string(), |s| s.path_string().to_string()),
+                        err.error(),
+                        err.debug()
+                    );
+                }
+                gstreamer::MessageView::Warning(warning) => {
+                    info!(
+                        "GStreamer Warning from {}: {} ({:?})",
+                        warning
+                            .src()
+                            .map_or_else(|| "None".to_string(), |s| s.path_string().to_string()),
+                        warning.error(),
+                        warning.debug()
+                    );
+                }
+                gstreamer::MessageView::Eos(eos_details) => {
+                    info!(
+                        "GStreamer EOS received on bus task: {:?}",
+                        eos_details.src().map(|s| s.path_string())
+                    );
+                    // This task can notify the main task that EOS was seen on the bus.
+                }
+                message => {
+                    info!("GStreamer: {:?}", message)
+                }
+                
+            }
+        }
+        info!("GStreamer bus monitoring task finished.");
+    });
 
     session_state
         .client_send_tx
@@ -321,18 +388,40 @@ async fn handle_track<'a>(
         ))
         .await?;
 
+    let mut reader = AnnexBReader::accumulate(|nal: RefNal<'_>| {
+        let nal_unit_type = nal.header().unwrap().nal_unit_type();
+        info!("H264: Saw start of {:?}", nal_unit_type);
+        if nal.is_complete() {
+            let mut data = vec![];
+            nal.reader().read_to_end(&mut data).unwrap();
+            info!("Server: Has NAL Unit: {:?} of size: {}", nal_unit_type, data.len());
+        }
+
+        NalInterest::Buffer
+    });
+
+
+    let mut depacketizer = H264Packet::default();
+
     loop {
         tokio::select! {
             data = track.read_rtp() => {
                 match data {
                     Ok((packet, _)) => {
-                        let bytes = depacketizer.depacketize(&packet.payload)?;
+                        info!("Got rtp packet with sequence number {}, timestamp {}, and payload length {}", packet.header.sequence_number, packet.header.timestamp, packet.payload.len());
+
+                        let h264_bytes = depacketizer.depacketize(&packet.payload)?;
+                        info!("Got h264 stream bytes of payload size {}", h264_bytes.len());
+                        reader.push(&h264_bytes);
+
+                        let bytes = packet.marshal().expect("RTP packet received was invalid and couldn't be marshalled");
+                        // info!("GStreamer RTP packet pushed of size: {}", bytes.len());
 
                         // Create a GStreamer buffer from the H.264 data
                         let buffer = gstreamer::Buffer::from_slice(bytes);
 
                         // Push the buffer into the pipeline
-                        let _ = appsrc.push_buffer(buffer);
+                        appsrc.push_buffer(buffer).expect("Failed to push buffer");
                     }
                     Err(err) => {
                         error!("{:?}", err);
@@ -346,6 +435,9 @@ async fn handle_track<'a>(
         }
     }
 
+    // Say we're done pushing data.
+    appsrc.end_of_stream()?;
+
     info!("Video track closed.");
 
     session_state
@@ -354,9 +446,15 @@ async fn handle_track<'a>(
         .await?;
 
     // Signal end of stream
-    appsrc.end_of_stream()?;
+    // appsrc.end_of_stream()?;
+    
+    // Wait til end or error.
+    let bus = pipeline.bus().expect("Failed to get pipeline bus");
+    let msg = bus.timed_pop_filtered(None, &[MessageType::Error, MessageType::Eos]);
 
-    // Wait for the pipeline to finish
+    info!("{:?}", msg);
+
+    // Cleanup
     pipeline.set_state(gstreamer::State::Null).unwrap();
 
     session_state

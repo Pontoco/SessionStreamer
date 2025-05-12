@@ -1,12 +1,17 @@
+use ::h264_reader::annexb::AnnexBReader;
+use ::h264_reader::nal::{Nal, RefNal};
+use ::h264_reader::push::NalInterest;
 use anyhow::{Result, anyhow};
 use axum_test::TestServer;
 use server::{ClientMessage, ServerMessage};
+use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
+use std::io::Read;
 use std::sync::Mutex;
 use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc, time::Duration};
 use test_log::test;
 use tokio::sync::{mpsc, watch};
-use tokio::time::timeout;
-use tracing::{info, info_span, instrument, Instrument, Level, Span};
+use tokio::time::{sleep, timeout};
+use tracing::{Instrument, Level, Span, info, info_span, instrument};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
@@ -86,12 +91,15 @@ async fn test_send_h264_stream() -> Result<()> {
         data_channel.on_message(Box::new(move |message| {
             let data_tx = data_tx.clone();
             let span = span.clone();
-            Box::pin(async move {
-                let string = String::from_utf8(message.data.to_vec()).unwrap();
-                let data = serde_json::from_str(&string).unwrap();
-                info!("Received message from server: {:?}", data);
-                data_tx.send(data).unwrap();
-            }.instrument(span))
+            Box::pin(
+                async move {
+                    let string = String::from_utf8(message.data.to_vec()).unwrap();
+                    let data = serde_json::from_str(&string).unwrap();
+                    info!("Received message from server: {:?}", data);
+                    data_tx.send(data).unwrap();
+                }
+                .instrument(span),
+            )
         }));
 
         info!("creating offer.");
@@ -122,14 +130,44 @@ async fn test_send_h264_stream() -> Result<()> {
 
         // Wait for the connection to connect.
         // todo
+        while peer.connection_state() != RTCPeerConnectionState::Connected {
+            sleep(Duration::from_micros(50)).await
+        }
 
         // Start streaming the data!
-        let h264_data = BufReader::new(File::open("./h264-sample.h264")?);
-        let mut h264reader = h264_reader::H264Reader::new(h264_data, 1024 * 1024);
+        let mut h264_data = BufReader::new(File::open("./h264-sample.h264")?);
+
         println!("Start streaming h264 file.");
 
+        let mut reader = AnnexBReader::accumulate(|nal: RefNal<'_>| {
+            if nal.is_complete() {
+                let nal_unit_type = nal.header().unwrap().nal_unit_type();
+                let mut data = vec![];
+                nal.reader().read_to_end(&mut data).unwrap();
+                // info!("Client: Has NAL Unit: {:?} of size: {}", nal_unit_type, data.len());
+            }
+
+            NalInterest::Buffer
+        });
+
+        let mut buf = vec![0; 1024];
+        loop {
+            let bytes_read = h264_data.read(&mut buf)?;
+            if bytes_read == 0 {
+                break;
+            }
+            reader.push(&buf);
+        }
+
+        let mut h264_data = BufReader::new(File::open("./h264-sample.h264")?);
+        let mut h264reader = h264_reader::H264Reader::new(h264_data, 1024 * 1024);
         let mut sample_count = 0;
         while let Ok(nal) = h264reader.next_nal() {
+            info!(
+                "Sending nal: {:?} of size: {}",
+                nal.unit_type,
+                nal.data.len()
+            );
             track
                 .write_sample(&Sample {
                     data: nal.data.freeze(),
@@ -138,6 +176,9 @@ async fn test_send_h264_stream() -> Result<()> {
                 })
                 .await?;
             sample_count += 1;
+            if sample_count > 200 { 
+                break;
+            }
             // Don't sleep. We want to be able to stream data really fast I think! Faster than realtime.
         }
 
@@ -148,10 +189,10 @@ async fn test_send_h264_stream() -> Result<()> {
 
         info!("Closing client peer connection");
 
-        data_channel.send_text(serde_json::to_string(&ClientMessage::SessionEnding)?).await?;
+        data_channel
+            .send_text(serde_json::to_string(&ClientMessage::SessionEnding)?)
+            .await?;
 
-        added_track.stop().await?;
-        peer.remove_track(&added_track).await?;
         // peer.close().await?;
 
         println!("Waiting for server to send a SessionComplete message..");
@@ -168,8 +209,13 @@ async fn test_send_h264_stream() -> Result<()> {
         })
         .await??;
 
+        added_track.stop().await?;
+        peer.remove_track(&added_track).await?;
+
         Ok(())
-    }.instrument(info_span!("integration_test")).await
+    }
+    .instrument(info_span!("integration_test"))
+    .await
 }
 
 /// Waits for the ICE connection to complete, meaning we are ready to be able to stream frames of video on the track.
