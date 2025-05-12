@@ -1,0 +1,3 @@
+[submodule "vendor/webrtc"]
+	path = vendor/webrtc
+	url = git@github.com:webrtc-rs/webrtc.git
