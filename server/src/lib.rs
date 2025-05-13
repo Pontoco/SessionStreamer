@@ -7,9 +7,8 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
-use gstreamer::{prelude::*, ClockTime, MessageType};
+use gstreamer::{ClockTime, MessageType, prelude::*};
 use serde::{Deserialize, Serialize};
-use tower_http::trace;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI8;
 use std::sync::atomic::Ordering::SeqCst;
@@ -18,11 +17,12 @@ use tokio::fs;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, Notify};
 use tokio_stream::StreamExt;
-use tracing::{error, info, Level};
+use tower_http::trace;
+use tracing::{Level, error, info};
 use tracing::{info_span, instrument, trace, warn};
-use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
+use tracing_subscriber::{EnvFilter, Layer};
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::{APIBuilder, interceptor_registry, media_engine};
 use webrtc::interceptor::registry::Registry;
@@ -142,8 +142,12 @@ async fn whip_post_handler(
     if fs::try_exists(&data_path).await? {
         return Err(AppError(
             StatusCode::INTERNAL_SERVER_ERROR,
-            anyhow!("Session ID already exists! [{}] path: [{:?}]", &query.session_id, &data_path),
-        ))
+            anyhow!(
+                "Session ID already exists! [{}] path: [{:?}]",
+                &query.session_id,
+                &data_path
+            ),
+        ));
     }
     fs::create_dir(&data_path).await?;
 
@@ -502,7 +506,7 @@ where
     T: std::error::Error + Send + Sync + 'static,
 {
     fn from(err: T) -> Self {
-        error!("{}",err.to_string());
+        error!("{}", err.to_string());
         AppError(
             StatusCode::INTERNAL_SERVER_ERROR,
             anyhow::Error::msg(err.to_string()),
@@ -524,15 +528,17 @@ fn ensure_app(condition: bool, status_code: StatusCode, msg: &'static str) -> Re
 }
 
 pub fn default_tracing_registry() {
+
     // Command line logging settings:
     // By default, set gstreamer to warn because it's quite noisy.
     let cli_log_settings =
         EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,gstreamer=warn"));
 
     tracing_subscriber::registry()
-        .with(cli_log_settings)
         .with(
             tracing_subscriber::fmt::layer()
+                .compact() // Log compactly
+                .with_filter(cli_log_settings), // Filter using the environment vairable RUST_LOG
         )
         .init();
 }
