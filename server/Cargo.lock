@@ -3211,10 +3211,12 @@ dependencies = [
  "bitflags 2.9.0",
  "bytes",
  "http",
+ "http-body",
  "mime",
  "pin-project-lite",
  "tower-layer",
  "tower-service",
+ "tracing",
 ]
 
 [[package]]

@@ -9,6 +9,7 @@ use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
 use gstreamer::{prelude::*, ClockTime, MessageType};
 use serde::{Deserialize, Serialize};
+use tower_http::trace;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI8;
 use std::sync::atomic::Ordering::SeqCst;
@@ -17,7 +18,7 @@ use tokio::fs;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, Notify};
 use tokio_stream::StreamExt;
-use tracing::{error, info};
+use tracing::{error, info, Level};
 use tracing::{info_span, instrument, trace, warn};
 use tracing_subscriber::EnvFilter;
 use tracing_subscriber::layer::SubscriberExt;
@@ -104,6 +105,11 @@ pub fn create_server(data_path: impl Into<PathBuf>) -> Result<axum::Router> {
 
     Ok(axum::Router::new()
         .route("/whip", post(whip_post_handler))
+        .layer(
+            trace::TraceLayer::new_for_http()
+                .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
+                .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
+        )
         .with_state(state))
 }
 
@@ -120,6 +126,7 @@ async fn whip_post_handler(
     Query(query): Query<QueryParams>,
     body: String,
 ) -> Result<impl IntoResponse, AppError> {
+    info!("Received new whip request");
     ensure_app(
         content_type == "application/sdp".parse()?,
         StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -261,9 +268,11 @@ async fn whip_post_handler(
 
     info!("WHIP session created.");
 
+    let id = &session_state.session_id;
     Ok(Response::builder()
         .status(StatusCode::CREATED)
         .header(header::CONTENT_TYPE, "application/sdp")
+        .header(header::LOCATION, format!("whip/{id}"))
         .body(local_description.sdp)?)
 }
 
@@ -424,7 +433,7 @@ async fn handle_track<'a>(
             data = track.read_rtp() => {
                 match data {
                     Ok((packet, _)) => {
-                        trace!("Got rtp packet with sequence number {}, timestamp {}, and payload length {}", packet.header.sequence_number, packet.header.timestamp, packet.payload.len());
+                        info!("Got rtp packet with sequence number {}, timestamp {}, and payload length {}", packet.header.sequence_number, packet.header.timestamp, packet.payload.len());
 
                         let h264_bytes = depacketizer.depacketize(&packet.payload)?;
                         packets += 1;
@@ -493,6 +502,7 @@ where
     T: std::error::Error + Send + Sync + 'static,
 {
     fn from(err: T) -> Self {
+        error!("{}",err.to_string());
         AppError(
             StatusCode::INTERNAL_SERVER_ERROR,
             anyhow::Error::msg(err.to_string()),
@@ -523,8 +533,6 @@ pub fn default_tracing_registry() {
         .with(cli_log_settings)
         .with(
             tracing_subscriber::fmt::layer()
-                .with_file(true)
-                .with_line_number(true),
         )
         .init();
 }
