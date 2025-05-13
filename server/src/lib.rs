@@ -1,26 +1,27 @@
 mod webrtc_utils;
 
-use anyhow::{Result, ensure};
+use anyhow::{Context, Result, anyhow, ensure};
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
-use gstreamer::{prelude::*, MessageType};
+use gstreamer::{MessageType, prelude::*};
 use serde::{Deserialize, Serialize};
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::EnvFilter;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI8;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, mpsc};
+use tokio::fs;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, Notify};
 use tokio_stream::StreamExt;
-use tracing::{info_span, instrument, trace, warn};
 use tracing::{error, info};
+use tracing::{info_span, instrument, trace, warn};
+use tracing_subscriber::EnvFilter;
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::util::SubscriberInitExt;
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::{APIBuilder, interceptor_registry, media_engine};
 use webrtc::interceptor::registry::Registry;
@@ -42,12 +43,13 @@ struct AppState {
 
 #[derive(Clone)]
 struct SessionState {
-    pub client_send_tx: Sender<ServerMessage>,
+    pub app_state: AppState, // Global state associated with the runtime.
+    pub session_id: String,  // GUID identifier for this session.
+    pub data_path: PathBuf,  // The path where data for this session is stored.
+    pub client_send_tx: Sender<ServerMessage>, // Sends messages to the client via our data channel.
+    pub connection_closed: Arc<Notify>, // Sent when the peer connection closes.
+    pub track_id: Arc<AtomicI8>, // Incrementing track id for each connected video track.
     pub client_send_rx: Arc<Mutex<Option<Receiver<ServerMessage>>>>,
-    pub connection_closed: Arc<Notify>,
-    pub app_state: AppState,
-    pub track_id: Arc<AtomicI8>,
-    pub session_id: String,
 }
 
 /// Sent from the server to control or inform the client.
@@ -80,7 +82,7 @@ struct Session {
     pub client_data_send: mpsc::Sender<ServerMessage>,
 }
 
-pub fn create_server() -> Result<axum::Router> {
+pub fn create_server(data_path: impl Into<PathBuf>) -> Result<axum::Router> {
     // Setup the default codec support for things like h264.
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
@@ -97,7 +99,7 @@ pub fn create_server() -> Result<axum::Router> {
     // Setup the axum server.
     let state = AppState {
         rtc: Arc::new(api),
-        data_path: PathBuf::from("./data"),
+        data_path: data_path.into(),
     };
 
     Ok(axum::Router::new()
@@ -128,16 +130,25 @@ async fn whip_post_handler(
 
     let connection_closed = Arc::new(Notify::new());
 
+    // todo: Verify this session_id hasn't already been created. Some kind of disk file to represent it?
+    let data_path = state.data_path.join(&query.session_id);
+    if fs::try_exists(&data_path).await? {
+        return Err(AppError(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            anyhow!("Session ID already exists! [{}] path: [{:?}]", &query.session_id, &data_path),
+        ))
+    }
+    fs::create_dir(&data_path).await?;
+
     let session_state = SessionState {
         client_send_tx: client_send.clone(),
         client_send_rx: Arc::new(Mutex::new(Some(client_send_rx))),
         app_state: state.clone(),
         connection_closed: connection_closed.clone(),
         track_id: Arc::new(AtomicI8::new(0)),
+        data_path: data_path,
         session_id: query.session_id,
     };
-
-    // todo: Verify this session_id hasn't already been created. Some kind of disk file to represent it?
 
     let config = RTCConfiguration {
         ..Default::default()
@@ -223,6 +234,7 @@ async fn whip_post_handler(
         );
 
         if let Err(err) = result.await {
+            error!("{}", err);
             let _ = state
                 .client_send_tx
                 .send(ServerMessage::from(err))
@@ -277,20 +289,28 @@ async fn handle_track<'a>(
     );
 
     // Initialize GStreamer
-    gstreamer::log::remove_default_log_function();
-    gstreamer::log::set_default_threshold(gstreamer::DebugLevel::Trace);
-    tracing_gstreamer::integrate_events();
+    gstreamer::log::remove_default_log_function(); // Removes printing to stdout.
+    gstreamer::log::set_default_threshold(gstreamer::DebugLevel::Trace); // Sets default filtering on the gstreamer side.
+    tracing_gstreamer::integrate_events(); // Merge gstreamer events into tracing.
+
     gstreamer::init()?;
 
-    // tracing_gstreamer::integrate_spans();
     info!("Initializing GStreamer pipeline for track {track_id}.");
 
     // Build the GStreamer pipeline
     //  - Feed in raw NALU packets in H264 format.
     //  - Output to MP4
+    let output_file = session_state
+        .data_path
+        .join("game_capture_{track_id}.mp4")
+        .into_os_string()
+        .into_string()
+        .map_err(|e| {
+            anyhow!("Data path [{e:?}] provided for session streamer was not valid UTF8 string.")
+        })?;
+
     let pipeline_str = format!(
-        "appsrc name=appsrc ! h264parse ! mp4mux name=mux ! filesink location=output_{}.mp4",
-        track_id
+        "appsrc name=appsrc ! h264parse ! mp4mux name=mux ! filesink location={output_file}",
     );
 
     info!("Starting pipeline [{}]", &pipeline_str);
@@ -324,13 +344,13 @@ async fn handle_track<'a>(
     appsrc.set_do_timestamp(true);
 
     // Start the pipeline
-    pipeline.set_state(gstreamer::State::Playing).unwrap();
+    pipeline.set_state(gstreamer::State::Playing)?;
 
     info!("Started gstreamer pipeline: {:?}", pipeline);
 
     // In handle_track, after starting the pipeline:
-    let bus = pipeline.bus().expect("Failed to get pipeline bus");
-    let pipeline_weak = pipeline.downgrade(); // To avoid owning pipeline in the task
+    // let bus = pipeline.bus().expect("Failed to get pipeline bus");
+    // let pipeline_weak = pipeline.downgrade(); // To avoid owning pipeline in the task
 
     // tokio::spawn(async move {
     //     let mut bus_stream = bus.stream_filtered();
@@ -433,7 +453,7 @@ async fn handle_track<'a>(
     appsrc.end_of_stream()?;
 
     // todo: Technically we should wait for the pipeline to finish!
-    // However, I haven't been able to get this to trigger. The filesink pad doesn't seem to want to close and emit the final EOS on the bus. 
+    // However, I haven't been able to get this to trigger. The filesink pad doesn't seem to want to close and emit the final EOS on the bus.
     info!("Waiting for bus to finish..");
     let bus = pipeline.bus().expect("Failed to get pipeline bus");
     bus.timed_pop_filtered(None, &[MessageType::Eos, MessageType::Error]);
@@ -483,10 +503,15 @@ fn ensure_app(condition: bool, status_code: StatusCode, msg: &'static str) -> Re
 pub fn default_tracing_registry() {
     // Command line logging settings:
     // By default, set gstreamer to warn because it's quite noisy.
-    let cli_log_settings = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,gstreamer=warn"));
+    let cli_log_settings =
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,gstreamer=warn"));
 
     tracing_subscriber::registry()
         .with(cli_log_settings)
-        .with(tracing_subscriber::fmt::layer())
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_file(true)
+                .with_line_number(true),
+        )
         .init();
 }

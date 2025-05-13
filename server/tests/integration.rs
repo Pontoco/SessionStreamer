@@ -4,9 +4,13 @@ use ::h264_reader::push::NalInterest;
 use anyhow::{Result, anyhow};
 use axum_test::TestServer;
 use server::{ClientMessage, ServerMessage};
+use tokio::sync::mpsc::UnboundedReceiver;
+use webrtc::data_channel::RTCDataChannel;
 use std::io::Read;
+use std::sync::mpsc::Receiver;
 use std::sync::Mutex;
 use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc, time::Duration};
+use tempfile::TempDir;
 use test_log::test;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{sleep, timeout};
@@ -32,17 +36,9 @@ use webrtc::{
     track::track_local::track_local_static_sample::TrackLocalStaticSample,
 };
 
-// This test creates a local webrtc client and streams an h264 file to the server as if it were a game
-// session.
-#[tokio::test]
-async fn test_send_h264_stream() -> Result<()> {
-    server::default_tracing_registry();
-    
-    let _span = info_span!("test").entered();
-    let app = TestServer::new(server::create_server()?)?;
+struct TestPeerSetup(RTCPeerConnection, Arc<TrackLocalStaticSample>, Arc<RTCDataChannel>, UnboundedReceiver<ServerMessage>);
 
-    info!("created test server");
-
+async fn connect_peer(app: &TestServer) -> Result<TestPeerSetup> {
     // Default API setup.
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
@@ -85,7 +81,7 @@ async fn test_send_h264_stream() -> Result<()> {
         Box::pin(
             async move {
                 let string = String::from_utf8(message.data.to_vec()).unwrap();
-                let data = serde_json::from_str(&string).unwrap();
+                let data: ServerMessage = serde_json::from_str(&string).unwrap();
                 info!("Received message from server: {:?}", data);
                 data_tx.send(data).unwrap();
             }
@@ -125,6 +121,25 @@ async fn test_send_h264_stream() -> Result<()> {
     while peer.connection_state() != RTCPeerConnectionState::Connected {
         sleep(Duration::from_micros(50)).await
     }
+
+    Ok(TestPeerSetup(peer, track, data_channel, data_rx))
+}
+
+// This test creates a local webrtc client and streams an h264 file to the server as if it were a game
+// session.
+#[tokio::test]
+async fn test_send_h264_stream() -> Result<()> {
+    server::default_tracing_registry();
+
+    let _span = info_span!("test").entered();
+
+    let temp_output_dir = TempDir::with_prefix("session_streamer_data")?;
+    let temp_output_path = temp_output_dir.path();
+    let app = TestServer::new(server::create_server(temp_output_path)?)?;
+
+    info!("Created test server storing data at [{temp_output_path:?}].");
+
+    let TestPeerSetup(peer, track, data_channel, mut server_messages)  = connect_peer(&app).await?;
 
     // Start streaming the data!
     let mut h264_data = BufReader::new(File::open("./h264-sample.h264")?);
@@ -189,7 +204,7 @@ async fn test_send_h264_stream() -> Result<()> {
 
     // Wait for the server to send a SessionComplete message.
     timeout(Duration::from_secs(5), async move {
-        while let Some(msg) = data_rx.recv().await {
+        while let Some(msg) = server_messages.recv().await {
             if let ServerMessage::SessionComplete = msg {
                 return Ok(());
             }
@@ -199,8 +214,7 @@ async fn test_send_h264_stream() -> Result<()> {
     })
     .await??;
 
-    added_track.stop().await?;
-    peer.remove_track(&added_track).await?;
+    // Check that we wrote the video out to the correct spot.
 
     Ok(())
 }

@@ -21,7 +21,7 @@ async fn main() -> Result<()> {
     let args = CommandLineArgs::parse(); // If needed, pass args.data_path to create_server
 
     // Call the library function to get the router
-    let app = server::create_server()?; // Potentially pass args here: create_server(args)?
+    let app = server::create_server(args.data_path)?; // Potentially pass args here: create_server(args)?
 
     let listener = TcpListener::bind("0.0.0.0:3000").await?;
     info!("Listening on {}", listener.local_addr()?);
