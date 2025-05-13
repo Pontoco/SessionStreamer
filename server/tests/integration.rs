@@ -186,9 +186,6 @@ async fn test_send_h264_stream() -> Result<()> {
     .await??;
 
     // Check that we wrote the video out to the correct spot.
-
-    sleep(Duration::from_secs(1)).await;
-
     let video_path = temp_output_path.join(session_id).join("game_capture_0.mp4");
     let video = fs::File::open(&video_path).await.context(format!("Can't find path: {video_path:?}"))?;
     assert_eq!(video.metadata().await?.len(), 498807); // This is the size we see observed. Regression test.
