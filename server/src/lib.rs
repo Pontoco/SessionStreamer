@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
-use gstreamer::{MessageType, prelude::*};
+use gstreamer::{prelude::*, ClockTime, MessageType};
 use serde::{Deserialize, Serialize};
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI8;
@@ -302,7 +302,7 @@ async fn handle_track<'a>(
     //  - Output to MP4
     let output_file = session_state
         .data_path
-        .join("game_capture_{track_id}.mp4")
+        .join(format!("game_capture_{track_id}.mp4"))
         .into_os_string()
         .into_string()
         .map_err(|e| {
@@ -417,6 +417,7 @@ async fn handle_track<'a>(
     // });
 
     let mut depacketizer = H264Packet::default();
+    let mut packets = 0;
 
     loop {
         tokio::select! {
@@ -424,10 +425,20 @@ async fn handle_track<'a>(
                 match data {
                     Ok((packet, _)) => {
                         trace!("Got rtp packet with sequence number {}, timestamp {}, and payload length {}", packet.header.sequence_number, packet.header.timestamp, packet.payload.len());
+
                         let h264_bytes = depacketizer.depacketize(&packet.payload)?;
+                        packets += 1;
 
                         if h264_bytes.len() > 0 {
-                            let buffer = gstreamer::Buffer::from_slice(h264_bytes);
+
+                            let mut buffer = gstreamer::Buffer::from_slice(h264_bytes);
+
+                            // Our RTP stream timestamps are given in a specific clock rate, passed in above.
+                            // That rate is in Hz, ie 90000Hz, so we convert to nanoseconds.
+                            let timestamp_nanos =  ClockTime::from_nseconds((packet.header.timestamp as u64 * ClockTime::SECOND.nseconds()) / codec.capability.clock_rate as u64);
+
+                            buffer.get_mut().unwrap().set_pts(Some(timestamp_nanos));
+                            buffer.get_mut().unwrap().set_dts(Some(timestamp_nanos));
                             appsrc.push_buffer(buffer).expect("Failed to push buffer");
                         }
                     }
@@ -442,6 +453,8 @@ async fn handle_track<'a>(
             }
         }
     }
+
+    info!("Finished receiving RTP stream. Received {packets} packets.");
 
     session_state
         .client_send_tx

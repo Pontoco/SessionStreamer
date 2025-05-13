@@ -1,9 +1,10 @@
 use ::h264_reader::annexb::AnnexBReader;
 use ::h264_reader::nal::{Nal, RefNal};
 use ::h264_reader::push::NalInterest;
-use anyhow::{Result, anyhow};
+use anyhow::{anyhow, Context, Result};
 use axum_test::TestServer;
 use server::{ClientMessage, ServerMessage};
+use tokio::fs;
 use tokio::sync::mpsc::UnboundedReceiver;
 use webrtc::data_channel::RTCDataChannel;
 use std::io::Read;
@@ -38,7 +39,7 @@ use webrtc::{
 
 struct TestPeerSetup(RTCPeerConnection, Arc<TrackLocalStaticSample>, Arc<RTCDataChannel>, UnboundedReceiver<ServerMessage>);
 
-async fn connect_peer(app: &TestServer) -> Result<TestPeerSetup> {
+async fn connect_peer(app: &TestServer, session_id: &str) -> Result<TestPeerSetup> {
     // Default API setup.
     let mut m = MediaEngine::default();
     m.register_default_codecs()?;
@@ -106,7 +107,7 @@ async fn connect_peer(app: &TestServer) -> Result<TestPeerSetup> {
     info!("issueing whip");
 
     let offer_response = app
-        .post("/whip?session_id=test_whip_success")
+        .post(&format!("/whip?session_id={session_id}"))
         .content_type("application/sdp")
         .bytes(latest_local_description.into())
         .await;
@@ -135,44 +136,18 @@ async fn test_send_h264_stream() -> Result<()> {
 
     let temp_output_dir = TempDir::with_prefix("session_streamer_data")?;
     let temp_output_path = temp_output_dir.path();
+    let session_id = "GameSession_0001_Test";
     let app = TestServer::new(server::create_server(temp_output_path)?)?;
 
     info!("Created test server storing data at [{temp_output_path:?}].");
 
-    let TestPeerSetup(peer, track, data_channel, mut server_messages)  = connect_peer(&app).await?;
+    let TestPeerSetup(_peer, track, data_channel, mut server_messages)  = connect_peer(&app, session_id).await?;
 
     // Start streaming the data!
-    let mut h264_data = BufReader::new(File::open("./h264-sample.h264")?);
-
-    let mut reader = AnnexBReader::accumulate(|nal: RefNal<'_>| {
-        if nal.is_complete() {
-            let nal_unit_type = nal.header().unwrap().nal_unit_type();
-            let mut data = vec![];
-            nal.reader().read_to_end(&mut data).unwrap();
-            // info!("Client: Has NAL Unit: {:?} of size: {}", nal_unit_type, data.len());
-        }
-
-        NalInterest::Buffer
-    });
-
-    let mut buf = vec![0; 1024];
-    loop {
-        let bytes_read = h264_data.read(&mut buf)?;
-        if bytes_read == 0 {
-            break;
-        }
-        reader.push(&buf);
-    }
-
-    let mut h264_data = BufReader::new(File::open("./h264-sample.h264")?);
+    let h264_data = BufReader::new(File::open("./h264-sample.h264")?);
     let mut h264reader = h264_reader::H264Reader::new(h264_data, 1024 * 1024);
     let mut sample_count = 0;
     while let Ok(nal) = h264reader.next_nal() {
-        // info!(
-        //     "Sending nal: {:?} of size: {}",
-        //     nal.unit_type,
-        //     nal.data.len()
-        // );
         track
             .write_sample(&Sample {
                 data: nal.data.freeze(),
@@ -192,13 +167,9 @@ async fn test_send_h264_stream() -> Result<()> {
         sample_count
     );
 
-    info!("Closing client peer connection");
-
     data_channel
         .send_text(serde_json::to_string(&ClientMessage::SessionEnding)?)
         .await?;
-
-    // peer.close().await?;
 
     info!("Waiting for server to send a SessionComplete message..");
 
@@ -215,6 +186,12 @@ async fn test_send_h264_stream() -> Result<()> {
     .await??;
 
     // Check that we wrote the video out to the correct spot.
+
+    sleep(Duration::from_secs(1)).await;
+
+    let video_path = temp_output_path.join(session_id).join("game_capture_0.mp4");
+    let video = fs::File::open(&video_path).await.context(format!("Can't find path: {video_path:?}"))?;
+    assert_eq!(video.metadata().await?.len(), 498807); // This is the size we see observed. Regression test.
 
     Ok(())
 }
