@@ -433,7 +433,7 @@ async fn handle_track<'a>(
             data = track.read_rtp() => {
                 match data {
                     Ok((packet, _)) => {
-                        info!("Got rtp packet with sequence number {}, timestamp {}, and payload length {}", packet.header.sequence_number, packet.header.timestamp, packet.payload.len());
+                        trace!("Got rtp packet with sequence number {}, timestamp {}, and payload length {}", packet.header.sequence_number, packet.header.timestamp, packet.payload.len());
 
                         let h264_bytes = depacketizer.depacketize(&packet.payload)?;
                         packets += 1;
