@@ -4,7 +4,8 @@ use tokio::net::TcpListener;
 use tracing::info;
 
 use clap::Parser;
-use std::path::PathBuf;
+use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt, EnvFilter};
+use std::{env, path::PathBuf};
 
 #[derive(Parser, Debug)]
 struct CommandLineArgs {
@@ -14,9 +15,9 @@ struct CommandLineArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt().init();
-    info!("Starting server...");
+    server::default_tracing_registry();
 
+    info!("Starting server...");
     let args = CommandLineArgs::parse(); // If needed, pass args.data_path to create_server
 
     // Call the library function to get the router
@@ -25,8 +26,7 @@ async fn main() -> Result<()> {
     let listener = TcpListener::bind("0.0.0.0:3000").await?;
     info!("Listening on {}", listener.local_addr()?);
 
-    axum::serve(listener, app)
-        .await?;
+    axum::serve(listener, app).await?;
 
     Ok(())
 }
