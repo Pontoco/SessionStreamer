@@ -9,11 +9,13 @@ use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
 use gstreamer::{ClockTime, MessageType, prelude::*};
 use serde::{Deserialize, Serialize};
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI8;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, mpsc};
-use tokio::fs;
+use tokio::fs::{self, File};
+use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, Notify};
 use tokio_stream::StreamExt;
@@ -51,6 +53,7 @@ struct SessionState {
     pub connection_closed: Arc<Notify>, // Sent when the peer connection closes.
     pub track_id: Arc<AtomicI8>, // Incrementing track id for each connected video track.
     pub client_send_rx: Arc<Mutex<Option<Receiver<ServerMessage>>>>,
+    pub data_channel_files: Arc<Mutex<HashMap<String, File>>>, // Writers for dumping data channel messages to disk.
 }
 
 /// Sent from the server to control or inform the client.
@@ -123,7 +126,7 @@ struct QueryParams {
 async fn whip_post_handler(
     State(state): State<AppState>,
     TypedHeader(content_type): TypedHeader<ContentType>,
-    Query(query): Query<QueryParams>,
+    Query(query_params): Query<HashMap<String, String>>,
     body: String,
 ) -> Result<impl IntoResponse, AppError> {
     info!("Received new whip request");
@@ -133,18 +136,25 @@ async fn whip_post_handler(
         "Content-Type must be application/sdp.",
     )?;
 
+    ensure_app(
+        query_params.contains_key("session_id"),
+        StatusCode::BAD_REQUEST,
+        "Query parameter missing: [session_id]",
+    )?;
+
     let (client_send, client_send_rx) = tokio::sync::mpsc::channel::<ServerMessage>(100);
 
     let connection_closed = Arc::new(Notify::new());
 
     // todo: Verify this session_id hasn't already been created. Some kind of disk file to represent it?
-    let data_path = state.data_path.join(&query.session_id);
+    let session_id = query_params["session_id"].clone();
+    let data_path = state.data_path.join(&session_id);
     if fs::try_exists(&data_path).await? {
         return Err(AppError(
-            StatusCode::INTERNAL_SERVER_ERROR,
+            StatusCode::CONFLICT,
             anyhow!(
                 "Session ID already exists! [{}] path: [{:?}]",
-                &query.session_id,
+                &session_id,
                 &data_path
             ),
         ));
@@ -158,9 +168,18 @@ async fn whip_post_handler(
         connection_closed: connection_closed.clone(),
         track_id: Arc::new(AtomicI8::new(0)),
         data_path: data_path,
-        session_id: query.session_id,
+        session_id: session_id,
+        data_channel_files: Arc::new(Mutex::new(HashMap::new())),
     };
 
+    // Dump the metadata in the data path.
+    fs::write(
+        session_state.data_path.join("metadata.json"),
+        serde_json::to_string(&query_params)?,
+    )
+    .await?;
+
+    // Boot up a new WebRTC peer connection to attach to the client.
     let config = RTCConfiguration {
         ..Default::default()
     };
@@ -195,44 +214,98 @@ async fn whip_post_handler(
 
         info!("Data channel connected: {}", &channel.label());
 
-        if channel.label() != "general" {
-            error!("Unexpected data channel [{}]", channel.label());
-            return;
-        }
+        match channel.label() {
+            // The 'general' data channel is used for signaling between the client / server.
+            "general" => {
+                if let Some(mut rx) = state.client_send_rx.lock().await.take() {
+                    // Make sure to log any errors with the data channel.
+                    channel.on_error(async |_, channel, error| {
+                        error!("Data channel [{}] had error: {}", channel.label(), error);
+                    });
 
-        if let Some(mut rx) = state.client_send_rx.lock().await.take() {
-            // Make sure to log any errors with the data channel.
-            channel.on_error(async |_, error| {
-                error!("Data channel had error: {}", error);
-            });
+                    channel.on_open(async move |_, channel| {
+                        // Our primary 'send stuff to the client' channel.
+                        while let Some(data) = rx.recv().await {
+                            match serde_json::to_string(&data) {
+                                Ok(json) => match channel.send_text(json).await {
+                                    Ok(_) => info!("Sent message to client [{:?}]", &data),
+                                    Err(err) => error!("Error sending message to client [{}]", err),
+                                },
+                                Err(err) => {
+                                    error!("Failed to serialize data message. {} {:?}", err, data)
+                                }
+                            }
+                        }
+                    });
 
-            channel.on_open(async move |_, channel| {
-                // Our primary 'send stuff to the client' channel.
-                while let Some(data) = rx.recv().await {
-                    match serde_json::to_string(&data) {
-                        Ok(json) => match channel.send_text(json).await {
-                            Ok(_) => info!("Sent message to client [{:?}]", &data),
-                            Err(err) => error!("Error sending message to client [{}]", err),
-                        },
-                        Err(err) => {
-                            error!("Failed to serialize data message. {} {:?}", err, data)
+                    channel.on_message(async |state, _, msg| {
+                        match serde_json::from_slice::<ClientMessage>(&msg.data) {
+                            Err(e) => {
+                                error!("Client did not send valid ClientMessage JSON. [{}]", e)
+                            }
+                            Ok(msg) => match msg {
+                                ClientMessage::SessionEnding => {
+                                    state.connection_closed.notify_waiters();
+                                }
+                            },
+                        };
+                    });
+                } else {
+                    error!("Data channel already initialized [{}]", channel.label());
+                }
+            }
+            // Other data channels are dumped directly to disk by id.
+            _ => {
+                channel.on_error(async move |_, channel, error| {
+                    error!("Data channel [{}] had error: {}", channel.label(), error);
+                });
+
+                channel.on_message(async move |state, channel, msg| {
+                    let mut map = state.data_channel_files.lock().await;
+
+                    let channel_label = channel.label();
+
+                    // Create the file writer if none exists. We do this on the first message so we can name it properly.
+                    if !map.contains_key(channel_label) {
+                        let ext = if msg.is_string { "txt" } else { "dat" };
+                        let file_path = state.data_path.join(format!("data_{channel_label}.{ext}"));
+                        match File::create(&file_path).await {
+                            Err(err) => {
+                                error!(
+                                    "Couldn't create file writer for data channel: [{}] [{}]",
+                                    channel_label, err
+                                );
+                            }
+                            Ok(file) => {
+                                info!("Created data channel file: [{:?}]", file_path);
+                                map.insert(channel_label.to_string(), file);
+                            }
                         }
                     }
-                }
-            });
 
-            channel.on_message(async |state, msg| {
-                match serde_json::from_slice::<ClientMessage>(&msg.data) {
-                    Err(e) => error!("Client did not send valid ClientMessage JSON. [{}]", e),
-                    Ok(msg) => match msg {
-                        ClientMessage::SessionEnding => {
-                            state.connection_closed.notify_waiters();
-                        }
-                    },
-                };
-            });
-        } else {
-            error!("Data channel already initialized [{}]", channel.label());
+                    // Write data channel raw bytes to the file.
+                    let file = map.get_mut(channel_label).unwrap();
+                    if let Err(err) = file.write_all(&msg.data).await {
+                        error!(
+                            "Failed to write datachannel buffer to disk: [{}] [{err}]",
+                            channel_label
+                        );
+                    }
+                });
+
+                channel.on_close(async move |state, channel| {
+                    // Close the file.
+                    let mut map = state.data_channel_files.lock().await;
+                    if map.contains_key(channel.label()) {
+                        drop(map.remove(channel.label()).unwrap());
+                    } else {
+                        error!(
+                            "Data channel closed, but there was no file writer found. [{}]",
+                            channel.label()
+                        );
+                    }
+                });
+            }
         }
     });
 
@@ -297,8 +370,9 @@ async fn handle_track<'a>(
         mime_type
             .as_str()
             .eq_ignore_ascii_case(media_engine::MIME_TYPE_H264),
-        "Video tracks must be in H264 format. [{}]",
-        mime_type
+        "Video tracks must be in H264 format. [{}] id=[{}]",
+        mime_type,
+        track.id()
     );
 
     // Initialize GStreamer
@@ -527,7 +601,9 @@ fn ensure_app(condition: bool, status_code: StatusCode, msg: &'static str) -> Re
     Ok(())
 }
 
-pub fn default_tracing_registry() {
+pub fn default_process_setup() {
+    // Send top-level panics to tracing log (via log).
+    log_panics::init();
 
     // Command line logging settings:
     // By default, set gstreamer to warn because it's quite noisy.

@@ -5,9 +5,9 @@ use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 use tracing::{Instrument, Span, info_span};
 use webrtc::{
-    data_channel::{data_channel_message::DataChannelMessage, RTCDataChannel},
-    peer_connection::{peer_connection_state::RTCPeerConnectionState, RTCPeerConnection},
-    rtp_transceiver::{rtp_receiver::RTCRtpReceiver, RTCRtpTransceiver},
+    data_channel::{RTCDataChannel, data_channel_message::DataChannelMessage},
+    peer_connection::{RTCPeerConnection, peer_connection_state::RTCPeerConnectionState},
+    rtp_transceiver::{RTCRtpTransceiver, rtp_receiver::RTCRtpReceiver},
     track::track_remote::TrackRemote,
 };
 
@@ -147,39 +147,42 @@ where
 
     pub fn on_close<F, Fut>(&self, mut handler: F)
     where
-        F: FnMut(T) -> Fut + Send + Sync + 'static,
+        F: FnMut(T, Arc<RTCDataChannel>) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         let span = Span::current();
         let state = self.state.clone();
+        let channel = self.data_channel.clone();
         self.data_channel.on_close(Box::new(move || {
-            let fut = handler(state.clone()).instrument(span.clone());
+            let fut = handler(state.clone(), channel.clone()).instrument(span.clone());
             Box::pin(async move { fut.await })
         }));
     }
 
     pub fn on_error<F, Fut>(&self, mut handler: F)
     where
-        F: FnMut(T, webrtc::Error) -> Fut + Send + Sync + 'static,
+        F: FnMut(T, Arc<RTCDataChannel>, webrtc::Error) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         let span = Span::current();
         let state = self.state.clone();
+        let channel = self.data_channel.clone();
         self.data_channel.on_error(Box::new(move |error| {
-            let fut = handler(state.clone(), error).instrument(span.clone());
+            let fut = handler(state.clone(), channel.clone(), error).instrument(span.clone());
             Box::pin(async move { fut.await })
         }));
     }
 
     pub fn on_message<F, Fut>(&self, mut handler: F)
     where
-        F: FnMut(T, DataChannelMessage) -> Fut + Send + Sync + 'static,
+        F: FnMut(T, Arc<RTCDataChannel>, DataChannelMessage) -> Fut + Send + Sync + 'static,
         Fut: Future<Output = ()> + Send + 'static,
     {
         let span = Span::current();
         let state = self.state.clone();
+        let channel = self.data_channel.clone();
         self.data_channel.on_message(Box::new(move |error| {
-            let fut = handler(state.clone(), error).instrument(span.clone());
+            let fut = handler(state.clone(), channel.clone(), error).instrument(span.clone());
             Box::pin(async move { fut.await })
         }));
     }

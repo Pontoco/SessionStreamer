@@ -6,6 +6,7 @@ use axum_test::TestServer;
 use server::{ClientMessage, ServerMessage};
 use tokio::fs;
 use tokio::sync::mpsc::UnboundedReceiver;
+use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use webrtc::data_channel::RTCDataChannel;
 use std::io::Read;
 use std::sync::mpsc::Receiver;
@@ -130,7 +131,7 @@ async fn connect_peer(app: &TestServer, session_id: &str) -> Result<TestPeerSetu
 // session.
 #[tokio::test]
 async fn test_send_h264_stream() -> Result<()> {
-    server::default_tracing_registry();
+    server::default_process_setup();
 
     let _span = info_span!("test").entered();
 
@@ -141,7 +142,20 @@ async fn test_send_h264_stream() -> Result<()> {
 
     info!("Created test server storing data at [{temp_output_path:?}].");
 
-    let TestPeerSetup(_peer, track, data_channel, mut server_messages)  = connect_peer(&app, session_id).await?;
+    let TestPeerSetup(peer, track, data_channel, mut server_messages)  = connect_peer(&app, session_id).await?;
+
+    // Connect a new data channel and send some test text.
+    let log_data_channel = peer.create_data_channel("test_logs", None).await?;
+    
+    info!("Waiting for logs data channel to open.");
+    while log_data_channel.ready_state() != RTCDataChannelState::Open {
+        sleep(Duration::from_micros(50)).await;
+    }
+
+    info!("Sending test log data.");
+    log_data_channel.send_text("Test line 1 with a bunch of data.").await?;
+    log_data_channel.send_text("Continuation of line 1 with a bunch of data.\n").await?;
+    log_data_channel.send_text("Test line 2 with a more data").await?;
 
     // Start streaming the data!
     let h264_data = BufReader::new(File::open("./h264-sample.h264")?);

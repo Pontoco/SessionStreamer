@@ -15,7 +15,7 @@ struct CommandLineArgs {
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    server::default_tracing_registry();
+    server::default_process_setup();
 
     info!("Starting server...");
     let args = CommandLineArgs::parse(); // If needed, pass args.data_path to create_server
