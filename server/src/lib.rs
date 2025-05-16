@@ -1,6 +1,7 @@
 mod webrtc_utils;
 
 use anyhow::{Context, Result, anyhow, ensure};
+use assertables::{assert_as_result, assert_eq_as_result, assert_ok, assert_result};
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -10,6 +11,8 @@ use axum_extra::headers::ContentType;
 use gstreamer::{ClockTime, MessageType, prelude::*};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::error::Error;
+use std::panic::Location;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI8;
 use std::sync::atomic::Ordering::SeqCst;
@@ -20,7 +23,7 @@ use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, Notify};
 use tokio_stream::StreamExt;
 use tower_http::trace;
-use tracing::{Level, error, info};
+use tracing::{Level, debug, error, info};
 use tracing::{info_span, instrument, trace, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -33,6 +36,10 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp::codecs::h264::H264Packet;
 use webrtc::rtp::packetizer::Depacketizer;
+use webrtc::rtp_transceiver::RTCPFeedback;
+use webrtc::rtp_transceiver::rtp_codec::{
+    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
+};
 use webrtc::track::track_remote::TrackRemote;
 use webrtc_utils::StatefulPeerConnection;
 
@@ -58,10 +65,12 @@ struct SessionState {
 
 /// Sent from the server to control or inform the client.
 /// We can use this to control the client, to inform it of information, or to receive commands.
+/// We have to avoid using complex enums here since C# can't easily parse those.
 #[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "kind")]
 pub enum ServerMessage {
-    Info(String),
-    Error(String),
+    Info { message: String },
+    Error { message: String },
     SessionComplete, // Sent to the client when the streaming is complete and all files are fully saved to disk.
 }
 
@@ -74,10 +83,12 @@ pub enum ClientMessage {
 
 impl<E> From<E> for ServerMessage
 where
-    E: Into<anyhow::Error>,
+    E: Into<LineTrackingError>,
 {
     fn from(value: E) -> Self {
-        ServerMessage::Error(format!("{}", value.into()))
+        ServerMessage::Error {
+            message: format!("{}", value.into()),
+        }
     }
 }
 
@@ -87,9 +98,13 @@ struct Session {
 }
 
 pub fn create_server(data_path: impl Into<PathBuf>) -> Result<axum::Router> {
-    // Setup the default codec support for things like h264.
     let mut m = MediaEngine::default();
-    m.register_default_codecs()?;
+
+    // We use a default media engine, but we only support H264 codecs.
+    for codec in supported_codecs() {
+        debug!("Registering codec: {:?}", codec);
+        m.register_codec(codec, RTPCodecType::Video)?;
+    }
 
     // Use the default interceptor registry. (from webrtc samples)
     let mut registry = Registry::new();
@@ -195,7 +210,9 @@ async fn whip_post_handler(
     // Send anything to this channel you want sent to the client via our data channel.
     session_state
         .client_send_tx
-        .send(ServerMessage::Info("Data channel connected!".into()))
+        .send(ServerMessage::Info {
+            message: "Data channel connected!".into(),
+        })
         .await?;
 
     peer.on_peer_connection_state_change(async |state, conn_state| {
@@ -359,21 +376,20 @@ async fn handle_track<'a>(
     track: Arc<TrackRemote>,
     session_id: &'a str,
     session_state: &mut SessionState,
-) -> anyhow::Result<()> {
+) -> Result<(), LineTrackingError> {
     info!(session_id = %session_id, track_id = %track.id(), kind = ?track.kind(), "Track connected.");
 
     let codec = track.codec();
     let mime_type = codec.capability.mime_type.to_lowercase();
     info!(%mime_type, clock_rate = codec.capability.clock_rate, "Track codec details.");
 
-    ensure!(
-        mime_type
-            .as_str()
-            .eq_ignore_ascii_case(media_engine::MIME_TYPE_H264),
-        "Video tracks must be in H264 format. [{}] id=[{}]",
-        mime_type,
-        track.id()
-    );
+    if !mime_type.as_str().eq_ignore_ascii_case(media_engine::MIME_TYPE_H264) {
+        return Err(anyhow!(
+            "Video tracks must be in H264 format. [{}] id=[{}]",
+            mime_type,
+            track.id()
+        ).into());
+    }
 
     // Initialize GStreamer
     gstreamer::log::remove_default_log_function(); // Removes printing to stdout.
@@ -482,9 +498,9 @@ async fn handle_track<'a>(
 
     session_state
         .client_send_tx
-        .send(ServerMessage::Info(
-            "Video stream connected. Streaming begin.".into(),
-        ))
+        .send(ServerMessage::Info {
+            message: "Video stream connected. Streaming begin.".into(),
+        })
         .await?;
 
     // Debugs the NAL units we've received.
@@ -517,6 +533,7 @@ async fn handle_track<'a>(
                         packets += 1;
 
                         if h264_bytes.len() > 0 {
+                            trace!("Got NALU: type={} size={}", h264_bytes[0], h264_bytes.len());
 
                             let mut buffer = gstreamer::Buffer::from_slice(h264_bytes);
 
@@ -545,7 +562,9 @@ async fn handle_track<'a>(
 
     session_state
         .client_send_tx
-        .send(ServerMessage::Info("Video stream closed.".into()))
+        .send(ServerMessage::Info {
+            message: "Video stream closed.".into(),
+        })
         .await?;
 
     // Say we're done pushing data.
@@ -568,6 +587,110 @@ async fn handle_track<'a>(
         .await?;
 
     Ok(())
+}
+
+/// The codecs that this server supports. We only support H264.
+/// This is copied from webrtc-rs, because we only support codecs supported by webrtc-rc.
+fn supported_codecs() -> Vec<RTCRtpCodecParameters> {
+    let video_rtcp_feedback = vec![
+        RTCPFeedback {
+            typ: "goog-remb".to_owned(),
+            parameter: "".to_owned(),
+        },
+        RTCPFeedback {
+            typ: "ccm".to_owned(),
+            parameter: "fir".to_owned(),
+        },
+        RTCPFeedback {
+            typ: "nack".to_owned(),
+            parameter: "".to_owned(),
+        },
+        RTCPFeedback {
+            typ: "nack".to_owned(),
+            parameter: "pli".to_owned(),
+        },
+    ];
+
+    vec![
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: media_engine::MIME_TYPE_H264.to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
+                        .to_owned(),
+                rtcp_feedback: video_rtcp_feedback.clone(),
+            },
+            payload_type: 102,
+            ..Default::default()
+        },
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: media_engine::MIME_TYPE_H264.to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42001f"
+                        .to_owned(),
+                rtcp_feedback: video_rtcp_feedback.clone(),
+            },
+            payload_type: 127,
+            ..Default::default()
+        },
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: media_engine::MIME_TYPE_H264.to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                        .to_owned(),
+                rtcp_feedback: video_rtcp_feedback.clone(),
+            },
+            payload_type: 125,
+            ..Default::default()
+        },
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: media_engine::MIME_TYPE_H264.to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f"
+                        .to_owned(),
+                rtcp_feedback: video_rtcp_feedback.clone(),
+            },
+            payload_type: 108,
+            ..Default::default()
+        },
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: media_engine::MIME_TYPE_H264.to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42001f"
+                        .to_owned(),
+                rtcp_feedback: video_rtcp_feedback.clone(),
+            },
+            payload_type: 127,
+            ..Default::default()
+        },
+        RTCRtpCodecParameters {
+            capability: RTCRtpCodecCapability {
+                mime_type: media_engine::MIME_TYPE_H264.to_owned(),
+                clock_rate: 90000,
+                channels: 0,
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640032"
+                        .to_owned(),
+                rtcp_feedback: video_rtcp_feedback.clone(),
+            },
+            payload_type: 123,
+            ..Default::default()
+        },
+    ]
 }
 
 // Error handling
@@ -599,6 +722,42 @@ fn ensure_app(condition: bool, status_code: StatusCode, msg: &'static str) -> Re
         return Err(AppError(status_code, anyhow::anyhow!(msg)));
     }
     Ok(())
+}
+
+#[derive(Debug)]
+pub struct LineTrackingError {
+    pub error: anyhow::Error,
+    pub location: &'static Location<'static>,
+}
+
+
+impl<E> From<E> for LineTrackingError
+where
+    E: Into<anyhow::Error>,
+{
+    #[track_caller]
+    #[inline]
+    fn from(error: E) -> Self {
+        Self {
+            error: error.into(),
+            location: Location::caller(),
+        }
+    }
+}
+
+fn foo() -> Result<(), anyhow::Error> {
+    Ok(())
+}
+
+fn bar() -> Result<(), anyhow::Error> {
+    foo()?;
+    Ok(())
+}
+
+impl std::fmt::Display for LineTrackingError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "{}, {}", self.error, self.location)
+    }
 }
 
 pub fn default_process_setup() {
