@@ -26,9 +26,7 @@ tokio-util = "0.7.15"
 
 [dev-dependencies]
 axum-test = "17.3.0"
-console-subscriber = "0.4.1"
 tempfile = "3.20.0"
-test-log = { version = "0.2.17", features = ["trace"] }
 
 [lib]
 doctest = false

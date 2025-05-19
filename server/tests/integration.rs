@@ -1,7 +1,6 @@
 use anyhow::{Context, Result};
 use axum_test::TestServer;
 use server::{ClientMessage, ServerMessage};
-use std::io::Read;
 use std::{fs::File, io::BufReader, sync::Arc, time::Duration};
 use tempfile::TempDir;
 use tokio::fs;

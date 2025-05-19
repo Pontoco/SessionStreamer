@@ -15,7 +15,7 @@ use std::panic::Location;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI8;
 use std::sync::atomic::Ordering::SeqCst;
-use std::sync::{Arc, mpsc};
+use std::sync::{Arc};
 use std::time::Duration;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
@@ -59,19 +59,6 @@ struct SessionState {
     pub track_id: Arc<AtomicI8>,               // Incrementing track id for each connected video track.
     pub client_send_rx: Arc<Mutex<Option<Receiver<ServerMessage>>>>,
 }
-impl SessionState {
-    pub async fn send_client_or_log_error<T>(&self, message: T)
-    where
-        T: Into<String>,
-    {
-        match self.client_send_tx.send(ServerMessage::Error { message: message.into() }).await {
-            Ok(()) => (),
-            Err(err) => {
-                error!("{}", err)
-            }
-        }
-    }
-}
 
 /// Sent from the server to control or inform the client.
 /// We can use this to control the client, to inform it of information, or to receive commands.
@@ -105,11 +92,6 @@ where
     }
 }
 
-/// Server-side state that lives while a specific session is being recorded.
-struct Session {
-    pub client_data_send: mpsc::Sender<ServerMessage>,
-}
-
 pub fn create_server(data_path: impl Into<PathBuf>) -> Result<axum::Router> {
     let mut m = MediaEngine::default();
 
@@ -139,11 +121,6 @@ pub fn create_server(data_path: impl Into<PathBuf>) -> Result<axum::Router> {
                 .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
         )
         .with_state(state))
-}
-
-#[derive(Deserialize)]
-struct QueryParams {
-    pub session_id: String,
 }
 
 #[axum::debug_handler]
@@ -827,15 +804,6 @@ where
             location: Location::caller(),
         }
     }
-}
-
-fn foo() -> Result<(), anyhow::Error> {
-    Ok(())
-}
-
-fn bar() -> Result<(), anyhow::Error> {
-    foo()?;
-    Ok(())
 }
 
 impl std::fmt::Display for LineTrackingError {
