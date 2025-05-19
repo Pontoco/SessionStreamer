@@ -11,10 +11,11 @@ use tokio_stream::{
     StreamExt,
     wrappers::{BroadcastStream, UnboundedReceiverStream, WatchStream},
 };
-use tracing::{Instrument, Span, error, info, info_span};
+use tracing::{Instrument, Span, debug, error, info, info_span, trace};
 use tracing_subscriber::registry::Data;
 use webrtc::{
     data_channel::{RTCDataChannel, data_channel_message::DataChannelMessage, data_channel_state::RTCDataChannelState},
+    interceptor,
     interceptor::Attributes,
     peer_connection::{
         RTCPeerConnection, offer_answer_options::RTCAnswerOptions, peer_connection_state::RTCPeerConnectionState,
@@ -31,7 +32,7 @@ pub struct StatefulPeerConnection {
 
 pub struct StatefulPeerConnectionMut {
     peer: RTCPeerConnection,
-    state_watch: watch::Receiver<RTCPeerConnectionState>,
+    pub state: watch::Receiver<RTCPeerConnectionState>,
 }
 
 impl Deref for StatefulPeerConnection {
@@ -63,8 +64,9 @@ impl StatefulPeerConnectionMut {
         self.peer.gathering_complete_promise().await
     }
 
-    pub fn state(&self) -> WatchStream<RTCPeerConnectionState> {
-        WatchStream::new(self.state_watch.clone())
+    /// Requests that the PeerConnection closes from this end.
+    pub async fn close(&self) -> Result<(), webrtc::Error> {
+        self.peer.close().await
     }
 }
 
@@ -78,7 +80,18 @@ impl StatefulPeerConnection {
     pub fn new(peer: RTCPeerConnection) -> StatefulPeerConnection {
         let (tx_conn_state, rx_conn_state) = watch::channel(peer.connection_state());
 
+        let span = Span::current().clone();
+        peer.dtls_transport().on_state_change(Box::new(move |ice| {
+            let _span = span.clone().entered();
+            info!("!!!!!!!!!!! DTLS Connection State: {}", ice);
+            info!("!!!!!!!!!!! DTLS Connection State: {}", ice);
+            info!("!!!!!!!!!!! DTLS Connection State: {}", ice);
+            info!("!!!!!!!!!!! DTLS Connection State: {}", ice);
+            Box::pin(async move {})
+        }));
+
         peer.on_peer_connection_state_change(Box::new(move |peer_state| {
+            info!("RTCPeerConnection state updated: {}", peer_state);
             let _ = tx_conn_state.send(peer_state);
             Box::pin(async move {})
         }));
@@ -86,7 +99,7 @@ impl StatefulPeerConnection {
         StatefulPeerConnection {
             peer: StatefulPeerConnectionMut {
                 peer: peer,
-                state_watch: rx_conn_state,
+                state: rx_conn_state,
             },
         }
     }
@@ -104,18 +117,18 @@ impl StatefulPeerConnection {
         self.peer.peer.on_data_channel(Box::new(move |channel| {
             let _span = span.clone().entered();
 
-            // Ignore: Channel  receiver dropped, so user doesn't want to hear about more channels.
+            // Ignore: Channel receiver dropped, so user doesn't want to hear about more channels.
             let _ = tx_channels.send(StatefulDataChannel::new(channel));
             Box::pin(async move {})
         }));
 
         let (tx_tracks, rx_tracks) = mpsc::unbounded_channel();
 
-        let peer_conn_state_watch = self.peer.state_watch.clone();
+        let peer_conn_state_watch = self.peer.state.clone();
         let span = Span::current().clone();
         self.peer.peer.on_track(Box::new(move |remote_track, _, _| {
             let _span = span.clone().entered();
-            
+
             info!("New remote track received: {} {}", remote_track.id(), remote_track.stream_id());
 
             let stateful_track = StatefulTrack::new(remote_track, peer_conn_state_watch.clone());
@@ -177,7 +190,6 @@ impl DataChannelMut {
 
 impl StatefulDataChannel {
     pub fn new(data_channel: Arc<RTCDataChannel>) -> StatefulDataChannel {
-
         let (tx_open, rx_open) = tokio::sync::oneshot::channel();
 
         info!("Register onopen");
@@ -293,10 +305,15 @@ impl StatefulTrack {
         // Clone id for logging, as the task might outlive the track reference if it's moved early
         let track_id_for_log = track.id().to_string();
 
+        // Placed here so the formatter doesn't get confused by the macro.
+        let buf_closed_error = webrtc::Error::Interceptor(interceptor::Error::Srtp(webrtc::srtp::Error::Util(
+            webrtc::util::Error::ErrBufferClosed,
+        )));
+
         tokio::spawn(async move {
             loop {
                 tokio::select! {
-                    // biased; // We may want to prioritize checking for RTP so we make sure to drain all packets as the connection closes.
+                    // biased; 
 
                     _ = peer_conn_state_rx.changed() => {
                         let state = *peer_conn_state_rx.borrow();
@@ -316,8 +333,13 @@ impl StatefulTrack {
                                 }
                             }
                             Err(e) => {
-                                error!("Error reading RTP for track {}: {:?}", track_id_for_log, e);
-                                // Attempt to send the error to the consumer before breaking.
+                                if e == buf_closed_error || e == webrtc::Error::ErrClosedPipe {
+                                    debug!("RTP buffer closed. {}", track_id_for_log);
+                                    break;
+                                }
+
+                                // Unknown error.
+                                // Pass the error along. If this fails, the user no longer cares because they dropped the stream.
                                 let _ = rtp_tx.send(Err(e));
                                 break;
                             }
@@ -325,8 +347,11 @@ impl StatefulTrack {
                     }
                 }
             }
+
+            // Sender should drop, closing stream & channel.
+
             info!("RTP reading task for track {} concluded.", track_id_for_log);
-        }.instrument(info_span!("stateful_track_rtp_reader", track_id = %track.id())));
+        }.instrument(info_span!("stateful_track", track_id = %track.id())));
 
         Self { track, rtp_rx }
     }

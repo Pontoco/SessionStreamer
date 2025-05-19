@@ -49,15 +49,15 @@ async fn connect_peer(app: &TestServer, session_id: &str) -> Result<TestPeerSetu
     registry = register_default_interceptors(registry, &mut m)?;
 
     info!("building api");
-    let api = APIBuilder::new()
-        .with_media_engine(m)
-        .with_interceptor_registry(registry)
-        .build();
+    let api = APIBuilder::new().with_media_engine(m).with_interceptor_registry(registry).build();
 
     info!("creating peer connection");
 
     // Setup the peer connection on the client side
-    let peer = api.new_peer_connection(RTCConfiguration::default()).await?;
+    let peer = api
+        .new_peer_connection(RTCConfiguration::default())
+        .instrument(info_span!("client_webrtc"))
+        .await?;
 
     info!("creating video track.");
 
@@ -131,10 +131,9 @@ async fn connect_peer(app: &TestServer, session_id: &str) -> Result<TestPeerSetu
 // This test creates a local webrtc client and streams an h264 file to the server as if it were a game
 // session.
 #[tokio::test]
+#[instrument(skip_all)]
 async fn test_send_h264_stream() -> Result<()> {
     server::default_process_setup();
-
-    let _span = info_span!("test").entered();
 
     let temp_output_dir = TempDir::with_prefix("session_streamer_data")?;
     let temp_output_path = temp_output_dir.path();
@@ -155,9 +154,7 @@ async fn test_send_h264_stream() -> Result<()> {
 
     info!("Sending test log data.");
     log_data_channel.send_text("Test line 1 with a bunch of data.").await?;
-    log_data_channel
-        .send_text("Continuation of line 1 with a bunch of data.\n")
-        .await?;
+    log_data_channel.send_text("Continuation of line 1 with a bunch of data.\n").await?;
     log_data_channel.send_text("Test line 2 with a more data").await?;
 
     // Start streaming the data!
@@ -186,14 +183,10 @@ async fn test_send_h264_stream() -> Result<()> {
         .send_text(serde_json::to_string(&ClientMessage::SessionEnding)?)
         .await?;
 
-    info!("Closing down peer connection.");
-    peer.close().await?;
-    drop(peer);
-
     info!("Waiting for server to send a SessionComplete message..");
 
     // Wait for the server to send a SessionComplete message.
-    timeout(Duration::from_secs(15), async move {
+    timeout(Duration::from_secs(5), async move {
         while let Some(msg) = server_messages.recv().await {
             if let ServerMessage::SessionComplete = msg {
                 return Ok(());
@@ -203,6 +196,10 @@ async fn test_send_h264_stream() -> Result<()> {
         anyhow::bail!("didn't find session message");
     })
     .await??;
+
+    info!("Closing down peer connection.");
+    peer.close().await?;
+    drop(peer);
 
     // Check that we wrote the video out to the correct spot.
     let video_path = temp_output_path.join(session_id).join("game_capture_0.mp4");

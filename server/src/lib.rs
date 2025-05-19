@@ -7,12 +7,13 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
-use futures::{StreamExt, TryStreamExt};
+use futures::{StreamExt, TryFutureExt, TryStreamExt, select};
 use gstreamer::{ClockTime, MessageType, prelude::*};
 use serde::{Deserialize, Serialize};
 use shared_stream::Share;
 use std::collections::HashMap;
 use std::error::Error;
+use std::future;
 use std::panic::Location;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI8;
@@ -22,8 +23,10 @@ use std::time::Duration;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::{Mutex, Notify};
+use tokio::sync::{Mutex, Notify, watch};
 use tokio::time::sleep;
+use tokio_stream::wrappers::WatchStream;
+use tokio_util::sync::CancellationToken;
 use tower_http::trace;
 use tracing::{Instrument, Level, Span, debug, error, info, span};
 use tracing::{info_span, instrument, trace, warn};
@@ -82,7 +85,7 @@ impl SessionState {
 pub enum ServerMessage {
     Info { message: String },
     Error { message: String },
-    SessionComplete, // Sent to the client when the streaming is complete and all files are fully saved to disk.
+    SessionComplete, // Sent to the client after it requests a graceful shutdown of the session.
 }
 
 /// Sent from the client to inform the server. Usually these are best effort, since the client can
@@ -169,8 +172,6 @@ async fn whip_post_handler(
 
     let (client_send, client_send_rx) = tokio::sync::mpsc::channel::<ServerMessage>(100);
 
-    let connection_closed = Arc::new(Notify::new());
-
     // todo: Verify this session_id hasn't already been created. Some kind of disk file to represent it?
     let session_id = query_params["session_id"].clone();
     let data_path = state.data_path.join(&session_id);
@@ -181,6 +182,8 @@ async fn whip_post_handler(
         ));
     }
     fs::create_dir(&data_path).await?;
+
+    let graceful_shutdown_src = CancellationToken::new();
 
     let session_state = SessionState {
         client_send_tx: client_send.clone(),
@@ -218,57 +221,83 @@ async fn whip_post_handler(
     info!("registering callbacks");
 
     // Echo state changes
-    let mut state_stream = peer.state();
-    tokio::spawn(async move {
-        while let Some(conn_state) = state_stream.next().await {
-            info!("Server peer connection state changed: {:?}", conn_state);
-            if conn_state == RTCPeerConnectionState::Closed || conn_state == RTCPeerConnectionState::Disconnected {
-                connection_closed.notify_waiters();
+    let mut state_stream = WatchStream::new(peer.state.clone());
+    tokio::spawn(
+        async move {
+            while let Some(conn_state) = state_stream.next().await {
+                info!("Server peer connection state changed: {:?}", conn_state);
             }
         }
-    }.instrument(Span::current()));
+        .instrument(Span::current()),
+    );
 
     let (mut peer, mut data_channels, mut tracks) = peer.get_channels();
 
     // Branch off a new task for each data channel.
     let state = session_state.clone();
-    tokio::spawn(async move {
-        while let Some(channel) = data_channels.next().await {
-            let state = state.clone();
-            tokio::spawn(async move {
-                let result = handle_data_channel(state.clone(), channel);
 
-                if let Err(err) = result.await {
-                    error!("{}", err);
-                    let _ = state
-                        .client_send_tx
-                        .send(ServerMessage::from(err))
-                        .await
-                        .map_err(|err| error!("{}", err));
-                }
-            }.instrument(Span::current()));
+    let graceful_shutdown = graceful_shutdown_src.clone();
+    let final_channels = tokio::spawn(
+        async move {
+            let mut channels_tasks = vec![];
+            while let Some(channel) = graceful_shutdown.run_until_cancelled(data_channels.next()).await.flatten() {
+                let state = state.clone();
+                let request_graceful_shutdown = graceful_shutdown.clone();
+                let task = tokio::spawn(
+                    async move {
+                        let result = handle_data_channel(state.clone(), channel, request_graceful_shutdown);
+
+                        if let Err(err) = result.await {
+                            error!("{}", err);
+                            let _ = state
+                                .client_send_tx
+                                .send(ServerMessage::from(err))
+                                .await
+                                .map_err(|err| error!("{}", err));
+                        }
+                    }
+                    .instrument(Span::current()),
+                );
+
+                channels_tasks.push(task);
+            }
+
+            channels_tasks
         }
-    }.instrument(Span::current()));
+        .instrument(Span::current()),
+    );
 
     // Branch off a new task for each video/audio track.
     let state = session_state.clone();
-    tokio::spawn(async move {
-        while let Some(track) = tracks.next().await {
-            let state = state.clone();
-            tokio::spawn(async move {
-                let result = handle_track(state.track_id.fetch_add(1, SeqCst), track, state.clone());
+    let graceful_shutdown = graceful_shutdown_src.clone();
+    let final_tracks = tokio::spawn(
+        async move {
+            let mut track_tasks = vec![];
+            while let Some(track) = graceful_shutdown.run_until_cancelled(tracks.next()).await.flatten() {
+                let state = state.clone();
+                let graceful_shutdown = graceful_shutdown.clone();
+                let task = tokio::spawn(
+                    async move {
+                        let result = handle_track(state.track_id.fetch_add(1, SeqCst), track, state.clone(), graceful_shutdown.clone());
 
-                if let Err(err) = result.await {
-                    error!("{}", err);
-                    let _ = state
-                        .client_send_tx
-                        .send(ServerMessage::from(err))
-                        .await
-                        .map_err(|err| error!("{}", err));
-                }
-            }.instrument(Span::current()));
+                        if let Err(err) = result.await {
+                            error!("{}", err);
+                            let _ = state
+                                .client_send_tx
+                                .send(ServerMessage::from(err))
+                                .await
+                                .map_err(|err| error!("{}", err));
+                        }
+                    }
+                    .instrument(Span::current()),
+                );
+                track_tasks.push(task);
+            }
+
+            track_tasks
         }
-    }.instrument(Span::current()));
+        .instrument(Span::current()),
+    );
 
     info!("setting descriptions");
 
@@ -290,15 +319,93 @@ async fn whip_post_handler(
 
     info!("Peer connection created. Waiting to connect.");
 
-    let id = &session_state.session_id;
+    // Close the connection manually if the client requests it.
+    // This is necessary because webrtc-rs does not properly handle the close_notify alert on the underlying data transport.
+    // https://github.com/webrtc-rs/webrtc/issues/672
+    let _ = tokio::spawn(
+        async move {
+            // Wait for either:
+            //   - graceful shutdown request
+            //   - connection state closed
+            loop {
+                tokio::select! {
+                    _ = graceful_shutdown_src.cancelled() => {
+                        info!("Starting graceful shutdown of session: {}", session_state.session_id);
+                        break;
+                    },
+
+                    _ = peer.state.changed() => {
+                        let state = *peer.state.borrow();
+                        if matches!(state,
+                            RTCPeerConnectionState::Closed
+                            | RTCPeerConnectionState::Disconnected
+                            | RTCPeerConnectionState::Failed) {
+                            info!("Connection interrupted. Starting shutdown of session: {}", session_state.session_id);
+                            break;
+                        }
+                    }
+                }
+            }
+
+            // Wait for all data channel tasks to cleanup and finish.
+            // Wait for all track tasks to cleanup and finish.
+            info!("Waiting for channel spawner to finish.");
+            let channels = final_channels.await?;
+
+            info!("Waiting for [{}] channels to finish.", channels.len());
+            for handle in channels {
+                handle.await?;
+            }
+
+            info!("Waiting for tracks to close.");
+            let tracks = final_tracks.await?;
+
+            info!("Waiting for [{}] tracks to finish.", tracks.len());
+            for handle in tracks {
+                handle.await?;
+            }
+
+            // Send the final OK, if it was graceful!
+            // Session Done.
+
+            // Send a graceful ack if we can.
+            if graceful_shutdown_src.is_cancelled() {
+                info!("Sending SessionComplete message.");
+                if let Err(err) = session_state.client_send_tx.send(ServerMessage::SessionComplete).await {
+                    error!("Failed to send SessionComplete on general channel while closing. [{}]", err);
+                }
+            }
+
+            // todo: Really, we should wait for the SessionComplete message to percolate through the entire system.
+            // However, that's intensely hard to do with webrtc-rs, because I don't know how to get access to
+            // the underlying transport that guarantees it's sent. Another way would be to get an ack from the client,
+            // but oof, that's a lot of acks, lol.
+            warn!("Using sleep. If we see missing SessionComplete messages under high load, this is why.");
+            sleep(Duration::from_millis(500)).await;
+
+            if let Err(err) = peer.close().await {
+                error!("Failed to close PeerConnection: [{}]", err);
+            }
+
+            info!("Gracefully shutdown session: [{}]", session_state.session_id);
+            Ok::<_, LineTrackingError>(())
+        }
+        .map_err(|err| error!("Failed to shutdown session: [{}]", err))
+        .instrument(Span::current()),
+    );
+
     Ok(Response::builder()
         .status(StatusCode::CREATED)
         .header(header::CONTENT_TYPE, "application/sdp")
-        .header(header::LOCATION, format!("whip/{id}"))
+        .header(header::LOCATION, format!("whip/{session_id}"))
         .body(local_description.sdp)?)
 }
 
-async fn handle_data_channel(state: SessionState, mut channel: StatefulDataChannel) -> Result<(), LineTrackingError> {
+async fn handle_data_channel(
+    state: SessionState,
+    mut channel: StatefulDataChannel,
+    graceful_shutdown: CancellationToken,
+) -> Result<(), LineTrackingError> {
     info!(ready_state=?channel.ready_state(), "Data channel connected: {}", &channel.label());
 
     let label = channel.label().to_string();
@@ -306,70 +413,77 @@ async fn handle_data_channel(state: SessionState, mut channel: StatefulDataChann
 
     // Log any errors the data channel encounters.
     let err_label = label.clone();
-    tokio::spawn(async move {
-        errors
-            .filter_map(async |val| val.map_err(|err| error!("{}", err)).ok())
-            .for_each(move |error| {
-                let err_label = err_label.clone();
-                async move {
-                    error!("Data channel [{}] had error: {}", &err_label, error);
-                }
-            })
-            .instrument(Span::current())
-    }.instrument(Span::current()));
+    tokio::spawn(
+        async move {
+            errors
+                .filter_map(async |val| val.map_err(|err| error!("{}", err)).ok())
+                .for_each(move |error| {
+                    let err_label = err_label.clone();
+                    async move {
+                        error!("Data channel [{}] had error: {}", &err_label, error);
+                    }
+                })
+                .instrument(Span::current())
+        }
+        .instrument(Span::current()),
+    );
 
     // Wait for the 'general' data channel to connect and receive messages on the other end of the above channel.
     match label.as_ref() {
         // The 'general' data channel is used for signaling between the client / server.
+        // Note: general stays open during graceful shutdown!
         "general" => {
             info!("got general");
-            let (opened, messages) = channel.on_open().await;
+            let (opened, mut messages) = channel.on_open().await;
             info!("opened general");
 
             // spawn a new task and send stuff
             // Our primary 'send stuff to the client' channel.
-            tokio::spawn(async move {
-                // Take the receiving end of the client send.
-                if let Some(mut rx) = state.client_send_rx.lock().await.take() {
-                    while let Some(data) = rx.recv().await {
-                        match serde_json::to_string(&data) {
-                            Ok(json) => match opened.send_text(json).await {
-                                Ok(_) => info!("Sent message to client [{:?}]", &data),
-                                Err(err) => match err {
-                                    webrtc::Error::ErrClosedPipe => {
-                                        trace!("Datachannel closed. Stopping sending messages to client.");
-                                    }
-                                    _ => error!("Error sending message to client [{}]", err),
+            tokio::spawn(
+                async move {
+                    // Take the receiving end of the client send.
+                    if let Some(mut rx) = state.client_send_rx.lock().await.take() {
+                        while let Some(data) = rx.recv().await {
+                            match serde_json::to_string(&data) {
+                                Ok(json) => match opened.send_text(json).await {
+                                    Ok(_) => info!("Sent message to client [{:?}]", &data),
+                                    Err(err) => match err {
+                                        webrtc::Error::ErrClosedPipe => {
+                                            trace!("Datachannel closed. Stopping sending messages to client.");
+                                        }
+                                        _ => error!("Error sending message to client [{}]", err),
+                                    },
                                 },
-                            },
-                            Err(err) => {
-                                error!("Failed to serialize data message. {} {:?}", err, data)
+                                Err(err) => {
+                                    error!("Failed to serialize data message. {} {:?}", err, data)
+                                }
                             }
                         }
+                    } else {
+                        error!("Data channel already initialized [{}]", label);
                     }
-                } else {
-                    error!("Data channel already initialized [{}]", label);
+
+                    info!("Closed client sending channel.");
                 }
-            }.instrument(Span::current()));
+                .instrument(Span::current()),
+            );
 
             // Handle messages from the client.
-            messages
-                .for_each(async |msg| {
-                    match serde_json::from_slice::<ClientMessage>(&msg.data) {
-                        Err(e) => {
-                            error!("Client did not send valid ClientMessage JSON. [{}]", e)
+            while let Some(msg) = graceful_shutdown.run_until_cancelled(messages.next()).await.flatten() {
+                match serde_json::from_slice::<ClientMessage>(&msg.data) {
+                    Err(e) => {
+                        error!("Client did not send valid ClientMessage JSON. [{}]", e)
+                    }
+                    Ok(msg) => match msg {
+                        ClientMessage::SessionEnding => {
+                            info!("Client requested polite closing of session.");
+                            graceful_shutdown.cancel();
                         }
-                        Ok(msg) => match msg {
-                            ClientMessage::SessionEnding => {
-                                info!("Client requested polite closing of connection.");
-                                // state.connection_closed.notify_waiters();
-                            }
-                            ClientMessage::Info { message } => info!("Received message from client: [{message}]"),
-                            ClientMessage::Error { message } => error!("Received error from client: [{message}]"),
-                        },
-                    };
-                })
-                .await;
+                        ClientMessage::Info { message } => info!("Received message from client: [{message}]"),
+                        ClientMessage::Error { message } => error!("Received error from client: [{message}]"),
+                    },
+                };
+            };
         }
         // Other data channels are dumped directly to disk by id.
         _ => {
@@ -387,7 +501,7 @@ async fn handle_data_channel(state: SessionState, mut channel: StatefulDataChann
             info!("Created data channel file: [{:?}]", file_path);
 
             let mut msg_count = 0;
-            while let Some(msg) = messages.next().await {
+            while let Some(msg) = graceful_shutdown.run_until_cancelled(messages.next()).await.flatten() {
                 info!(size = msg.data.len(), msg.is_string, "Data channel [{}] received packet.", label);
 
                 // Some simple stats logging.
@@ -420,7 +534,7 @@ async fn handle_data_channel(state: SessionState, mut channel: StatefulDataChann
 }
 
 /// Handles video tracks that the client sends to us.
-async fn handle_track(track_id: i8, track: StatefulTrack, session_state: SessionState) -> Result<(), LineTrackingError> {
+async fn handle_track(track_id: i8, track: StatefulTrack, session_state: SessionState, graceful_shutdown: CancellationToken) -> Result<(), LineTrackingError> {
     info!(session_state.session_id, track_id = %track.id(), kind = ?track.kind(), "Track connected.");
 
     let codec = track.codec();
@@ -509,7 +623,7 @@ async fn handle_track(track_id: i8, track: StatefulTrack, session_state: Session
 
     let id = track.id();
     let mut packet_stream = track.into_rtp_stream();
-    while let Some(data) = packet_stream.next().await {
+    while let Some(data) = graceful_shutdown.run_until_cancelled(packet_stream.next()).await.flatten() {
         match data {
             Ok((packet, _)) => {
                 rtp_packets += 1;
@@ -546,7 +660,7 @@ async fn handle_track(track_id: i8, track: StatefulTrack, session_state: Session
                 }
             }
             Err(err) => {
-                error!("{:?}", err);
+                error!("Error when reading RTP stream for video. [{:?}]", err);
                 break;
             }
         };
@@ -575,9 +689,6 @@ async fn handle_track(track_id: i8, track: StatefulTrack, session_state: Session
     pipeline.set_state(gstreamer::State::Null).unwrap();
 
     info!("Finished receiving video track. Saved to {output_file}");
-
-    // For now, the session closes when the video is finished.
-    session_state.client_send_tx.send(ServerMessage::SessionComplete).await?;
 
     Ok(())
 }
