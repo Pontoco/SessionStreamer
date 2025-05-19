@@ -22,7 +22,6 @@ tokio-stream = { version = "0.1.17", features = ["sync"] }
 h264-reader = "0.8.0"
 tracing-gstreamer = "0.8.0"
 log-panics = { version = "2.1.0", features = ["with-backtrace"] }
-shared_stream = "0.2.1"
 tokio-util = "0.7.15"
 
 [dev-dependencies]

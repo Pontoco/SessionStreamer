@@ -7,7 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
-use futures::{StreamExt, TryFutureExt, TryStreamExt};
+use futures::{StreamExt, TryFutureExt};
 use gstreamer::{ClockTime, MessageType, prelude::*};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;

@@ -1,6 +1,5 @@
 use std::{ops::Deref, sync::Arc};
 
-use futures::SinkExt;
 use tokio::sync::{
     broadcast,
     mpsc::{self},
