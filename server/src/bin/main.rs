@@ -4,8 +4,7 @@ use tokio::{fs, io, net::TcpListener};
 use tracing::info;
 
 use clap::Parser;
-use std::{env, path::PathBuf};
-use tracing_subscriber::{EnvFilter, layer::SubscriberExt, util::SubscriberInitExt};
+use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 struct CommandLineArgs {

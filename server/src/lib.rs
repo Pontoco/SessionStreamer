@@ -1,19 +1,16 @@
 mod webrtc_utils;
 
-use anyhow::{Context, Result, anyhow, ensure};
+use anyhow::{Result, anyhow};
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
-use futures::{StreamExt, TryFutureExt, TryStreamExt, select};
+use futures::{StreamExt, TryFutureExt, TryStreamExt};
 use gstreamer::{ClockTime, MessageType, prelude::*};
 use serde::{Deserialize, Serialize};
-use shared_stream::Share;
 use std::collections::HashMap;
-use std::error::Error;
-use std::future;
 use std::panic::Location;
 use std::path::PathBuf;
 use std::sync::atomic::AtomicI8;
@@ -23,13 +20,13 @@ use std::time::Duration;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::{Receiver, Sender};
-use tokio::sync::{Mutex, Notify, watch};
+use tokio::sync::Mutex;
 use tokio::time::sleep;
 use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
 use tower_http::trace;
-use tracing::{Instrument, Level, Span, debug, error, info, span};
-use tracing::{info_span, instrument, trace, warn};
+use tracing::{Instrument, Level, Span, debug, error, info};
+use tracing::{trace, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
@@ -43,7 +40,6 @@ use webrtc::rtp::codecs::h264::H264Packet;
 use webrtc::rtp::packetizer::Depacketizer;
 use webrtc::rtp_transceiver::RTCPFeedback;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
-use webrtc::track::track_remote::TrackRemote;
 use webrtc_utils::{StatefulDataChannel, StatefulPeerConnection, StatefulTrack};
 
 #[derive(Clone)]

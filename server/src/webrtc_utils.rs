@@ -1,18 +1,14 @@
 use std::{ops::Deref, sync::Arc};
 
-use futures::{SinkExt, Stream};
+use futures::SinkExt;
 use tokio::sync::{
     broadcast,
     mpsc::{self},
-    oneshot::{self, error::RecvError},
+    oneshot::{self},
     watch,
 };
-use tokio_stream::{
-    StreamExt,
-    wrappers::{BroadcastStream, UnboundedReceiverStream, WatchStream},
-};
-use tracing::{Instrument, Span, debug, error, info, info_span, trace};
-use tracing_subscriber::registry::Data;
+use tokio_stream::wrappers::{BroadcastStream, UnboundedReceiverStream};
+use tracing::{Instrument, Span, debug, info, info_span};
 use webrtc::{
     data_channel::{RTCDataChannel, data_channel_message::DataChannelMessage, data_channel_state::RTCDataChannelState},
     interceptor,
@@ -22,7 +18,6 @@ use webrtc::{
         sdp::session_description::RTCSessionDescription,
     },
     rtp::packet::Packet,
-    rtp_transceiver::{RTCRtpDecodingParameters, RTCRtpTransceiver, rtp_receiver::RTCRtpReceiver},
     track::track_remote::TrackRemote,
 };
 

@@ -1,27 +1,17 @@
-use ::h264_reader::annexb::AnnexBReader;
-use ::h264_reader::nal::{Nal, RefNal};
-use ::h264_reader::push::NalInterest;
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Context, Result};
 use axum_test::TestServer;
 use server::{ClientMessage, ServerMessage};
 use std::io::Read;
-use std::sync::Mutex;
-use std::sync::mpsc::Receiver;
-use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc, time::Duration};
+use std::{fs::File, io::BufReader, sync::Arc, time::Duration};
 use tempfile::TempDir;
-use test_log::test;
 use tokio::fs;
 use tokio::sync::mpsc::UnboundedReceiver;
-use tokio::sync::{mpsc, watch};
+use tokio::sync::mpsc;
 use tokio::time::{sleep, timeout};
-use tracing::{Instrument, Level, Span, info, info_span, instrument};
-use tracing_subscriber::layer::SubscriberExt;
-use tracing_subscriber::util::SubscriberInitExt;
-use tracing_subscriber::{EnvFilter, fmt};
+use tracing::{Instrument, Span, info, info_span, instrument};
 use webrtc::api::media_engine;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_state::RTCDataChannelState;
-use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
 use webrtc::media::io::h264_reader;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
@@ -75,7 +65,7 @@ async fn connect_peer(app: &TestServer, session_id: &str) -> Result<TestPeerSetu
     // Creates a data channel track and adds it to the peer.
     info!("creating data channel.");
     let data_channel = peer.create_data_channel("general", None).await?;
-    let (data_tx, mut data_rx) = mpsc::unbounded_channel();
+    let (data_tx, data_rx) = mpsc::unbounded_channel();
 
     let span = Span::current().clone();
     data_channel.on_message(Box::new(move |message| {
