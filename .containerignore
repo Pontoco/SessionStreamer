@@ -1,0 +1,4 @@
+./server/target
+./server/data
+.cargo
+.idea
