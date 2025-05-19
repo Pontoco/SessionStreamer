@@ -1,15 +1,16 @@
 mod webrtc_utils;
 
 use anyhow::{Context, Result, anyhow, ensure};
-use assertables::{assert_as_result, assert_eq_as_result, assert_ok, assert_result};
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::post;
 use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
+use futures::{StreamExt, TryStreamExt};
 use gstreamer::{ClockTime, MessageType, prelude::*};
 use serde::{Deserialize, Serialize};
+use shared_stream::Share;
 use std::collections::HashMap;
 use std::error::Error;
 use std::panic::Location;
@@ -17,13 +18,14 @@ use std::path::PathBuf;
 use std::sync::atomic::AtomicI8;
 use std::sync::atomic::Ordering::SeqCst;
 use std::sync::{Arc, mpsc};
+use std::time::Duration;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::{Mutex, Notify};
-use tokio_stream::StreamExt;
+use tokio::time::sleep;
 use tower_http::trace;
-use tracing::{Level, debug, error, info};
+use tracing::{Instrument, Level, Span, debug, error, info, span};
 use tracing::{info_span, instrument, trace, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
@@ -37,11 +39,9 @@ use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp::codecs::h264::H264Packet;
 use webrtc::rtp::packetizer::Depacketizer;
 use webrtc::rtp_transceiver::RTCPFeedback;
-use webrtc::rtp_transceiver::rtp_codec::{
-    RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType,
-};
+use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
 use webrtc::track::track_remote::TrackRemote;
-use webrtc_utils::StatefulPeerConnection;
+use webrtc_utils::{StatefulDataChannel, StatefulPeerConnection, StatefulTrack};
 
 #[derive(Clone)]
 struct AppState {
@@ -53,14 +53,25 @@ struct AppState {
 
 #[derive(Clone)]
 struct SessionState {
-    pub app_state: AppState, // Global state associated with the runtime.
-    pub session_id: String,  // GUID identifier for this session.
-    pub data_path: PathBuf,  // The path where data for this session is stored.
+    pub app_state: AppState,                   // Global state associated with the runtime.
+    pub session_id: String,                    // GUID identifier for this session.
+    pub data_path: PathBuf,                    // The path where data for this session is stored.
     pub client_send_tx: Sender<ServerMessage>, // Sends messages to the client via our data channel.
-    pub connection_closed: Arc<Notify>, // Sent when the peer connection closes.
-    pub track_id: Arc<AtomicI8>, // Incrementing track id for each connected video track.
+    pub track_id: Arc<AtomicI8>,               // Incrementing track id for each connected video track.
     pub client_send_rx: Arc<Mutex<Option<Receiver<ServerMessage>>>>,
-    pub data_channel_files: Arc<Mutex<HashMap<String, File>>>, // Writers for dumping data channel messages to disk.
+}
+impl SessionState {
+    pub async fn send_client_or_log_error<T>(&self, message: T)
+    where
+        T: Into<String>,
+    {
+        match self.client_send_tx.send(ServerMessage::Error { message: message.into() }).await {
+            Ok(()) => (),
+            Err(err) => {
+                error!("{}", err)
+            }
+        }
+    }
 }
 
 /// Sent from the server to control or inform the client.
@@ -76,8 +87,11 @@ pub enum ServerMessage {
 
 /// Sent from the client to inform the server. Usually these are best effort, since the client can
 /// disappear at any time.
-#[derive(PartialEq, Serialize, Deserialize, Debug)]
+#[derive(Serialize, Deserialize, Debug)]
+#[serde(tag = "kind")]
 pub enum ClientMessage {
+    Info { message: String },
+    Error { message: String },
     SessionEnding, // Sent when the client is done sending video for the session.
 }
 
@@ -110,10 +124,7 @@ pub fn create_server(data_path: impl Into<PathBuf>) -> Result<axum::Router> {
     let mut registry = Registry::new();
     registry = interceptor_registry::register_default_interceptors(registry, &mut m)?;
 
-    let api = APIBuilder::new()
-        .with_media_engine(m)
-        .with_interceptor_registry(registry)
-        .build();
+    let api = APIBuilder::new().with_media_engine(m).with_interceptor_registry(registry).build();
 
     // Setup the axum server.
     let state = AppState {
@@ -136,7 +147,6 @@ struct QueryParams {
     pub session_id: String,
 }
 
-#[instrument("server", skip_all)]
 #[axum::debug_handler]
 async fn whip_post_handler(
     State(state): State<AppState>,
@@ -167,11 +177,7 @@ async fn whip_post_handler(
     if fs::try_exists(&data_path).await? {
         return Err(AppError(
             StatusCode::CONFLICT,
-            anyhow!(
-                "Session ID already exists! [{}] path: [{:?}]",
-                &session_id,
-                &data_path
-            ),
+            anyhow!("Session ID already exists! [{}] path: [{:?}]", &session_id, &data_path),
         ));
     }
     fs::create_dir(&data_path).await?;
@@ -180,169 +186,91 @@ async fn whip_post_handler(
         client_send_tx: client_send.clone(),
         client_send_rx: Arc::new(Mutex::new(Some(client_send_rx))),
         app_state: state.clone(),
-        connection_closed: connection_closed.clone(),
         track_id: Arc::new(AtomicI8::new(0)),
         data_path: data_path,
-        session_id: session_id,
-        data_channel_files: Arc::new(Mutex::new(HashMap::new())),
+        session_id: session_id.clone(),
     };
 
     // Dump the metadata in the data path.
-    fs::write(
-        session_state.data_path.join("metadata.json"),
-        serde_json::to_string(&query_params)?,
-    )
-    .await?;
+    fs::write(session_state.data_path.join("metadata.json"), serde_json::to_string(&query_params)?).await?;
 
     // Boot up a new WebRTC peer connection to attach to the client.
-    let config = RTCConfiguration {
-        ..Default::default()
-    };
+    let config = RTCConfiguration { ..Default::default() };
 
-    let peer = state
-        .rtc
-        .new_peer_connection(config)
-        .await
-        .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?;
+    let peer = StatefulPeerConnection::new(
+        state
+            .rtc
+            .new_peer_connection(config)
+            .await
+            .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?,
+    );
 
-    let peer = StatefulPeerConnection::new(peer, session_state.clone());
+    info!("peer connection created");
 
-    // Send anything to this channel you want sent to the client via our data channel.
+    // Buffer an initial message that will be sent once our general data channel is connected.
     session_state
         .client_send_tx
         .send(ServerMessage::Info {
-            message: "Data channel connected!".into(),
+            message: "Connected to general data channel!".into(),
         })
         .await?;
 
-    peer.on_peer_connection_state_change(async |state, conn_state| {
-        info!("Server peer connection state changed: {:?}", conn_state);
-        if conn_state == RTCPeerConnectionState::Closed
-            || conn_state == RTCPeerConnectionState::Disconnected
-        {
-            state.connection_closed.notify_waiters();
+    info!("registering callbacks");
+
+    // Echo state changes
+    let mut state_stream = peer.state();
+    tokio::spawn(async move {
+        while let Some(conn_state) = state_stream.next().await {
+            info!("Server peer connection state changed: {:?}", conn_state);
+            if conn_state == RTCPeerConnectionState::Closed || conn_state == RTCPeerConnectionState::Disconnected {
+                connection_closed.notify_waiters();
+            }
         }
-    });
+    }.instrument(Span::current()));
 
-    // Wait for the 'general' data channel to connect and receive messages on the other end of the above channel.
-    peer.on_data_channel(async |state, channel| {
-        let span = info_span!("on_data_channel");
-        let _ = span.enter();
+    let (mut peer, mut data_channels, mut tracks) = peer.get_channels();
 
-        info!("Data channel connected: {}", &channel.label());
+    // Branch off a new task for each data channel.
+    let state = session_state.clone();
+    tokio::spawn(async move {
+        while let Some(channel) = data_channels.next().await {
+            let state = state.clone();
+            tokio::spawn(async move {
+                let result = handle_data_channel(state.clone(), channel);
 
-        match channel.label() {
-            // The 'general' data channel is used for signaling between the client / server.
-            "general" => {
-                if let Some(mut rx) = state.client_send_rx.lock().await.take() {
-                    // Make sure to log any errors with the data channel.
-                    channel.on_error(async |_, channel, error| {
-                        error!("Data channel [{}] had error: {}", channel.label(), error);
-                    });
-
-                    channel.on_open(async move |_, channel| {
-                        // Our primary 'send stuff to the client' channel.
-                        while let Some(data) = rx.recv().await {
-                            match serde_json::to_string(&data) {
-                                Ok(json) => match channel.send_text(json).await {
-                                    Ok(_) => info!("Sent message to client [{:?}]", &data),
-                                    Err(err) => error!("Error sending message to client [{}]", err),
-                                },
-                                Err(err) => {
-                                    error!("Failed to serialize data message. {} {:?}", err, data)
-                                }
-                            }
-                        }
-                    });
-
-                    channel.on_message(async |state, _, msg| {
-                        match serde_json::from_slice::<ClientMessage>(&msg.data) {
-                            Err(e) => {
-                                error!("Client did not send valid ClientMessage JSON. [{}]", e)
-                            }
-                            Ok(msg) => match msg {
-                                ClientMessage::SessionEnding => {
-                                    state.connection_closed.notify_waiters();
-                                }
-                            },
-                        };
-                    });
-                } else {
-                    error!("Data channel already initialized [{}]", channel.label());
+                if let Err(err) = result.await {
+                    error!("{}", err);
+                    let _ = state
+                        .client_send_tx
+                        .send(ServerMessage::from(err))
+                        .await
+                        .map_err(|err| error!("{}", err));
                 }
-            }
-            // Other data channels are dumped directly to disk by id.
-            _ => {
-                channel.on_error(async move |_, channel, error| {
-                    error!("Data channel [{}] had error: {}", channel.label(), error);
-                });
-
-                channel.on_message(async move |state, channel, msg| {
-                    let mut map = state.data_channel_files.lock().await;
-
-                    let channel_label = channel.label();
-
-                    // Create the file writer if none exists. We do this on the first message so we can name it properly.
-                    if !map.contains_key(channel_label) {
-                        let ext = if msg.is_string { "txt" } else { "dat" };
-                        let file_path = state.data_path.join(format!("data_{channel_label}.{ext}"));
-                        match File::create(&file_path).await {
-                            Err(err) => {
-                                error!(
-                                    "Couldn't create file writer for data channel: [{}] [{}]",
-                                    channel_label, err
-                                );
-                            }
-                            Ok(file) => {
-                                info!("Created data channel file: [{:?}]", file_path);
-                                map.insert(channel_label.to_string(), file);
-                            }
-                        }
-                    }
-
-                    // Write data channel raw bytes to the file.
-                    let file = map.get_mut(channel_label).unwrap();
-                    if let Err(err) = file.write_all(&msg.data).await {
-                        error!(
-                            "Failed to write datachannel buffer to disk: [{}] [{err}]",
-                            channel_label
-                        );
-                    }
-                });
-
-                channel.on_close(async move |state, channel| {
-                    // Close the file.
-                    let mut map = state.data_channel_files.lock().await;
-                    if map.contains_key(channel.label()) {
-                        drop(map.remove(channel.label()).unwrap());
-                    } else {
-                        error!(
-                            "Data channel closed, but there was no file writer found. [{}]",
-                            channel.label()
-                        );
-                    }
-                });
-            }
+            }.instrument(Span::current()));
         }
-    });
+    }.instrument(Span::current()));
 
-    peer.on_track(async |mut state, track, _, _| {
-        let result = handle_track(
-            state.track_id.fetch_add(1, SeqCst),
-            track,
-            "sessionid",
-            &mut state,
-        );
+    // Branch off a new task for each video/audio track.
+    let state = session_state.clone();
+    tokio::spawn(async move {
+        while let Some(track) = tracks.next().await {
+            let state = state.clone();
+            tokio::spawn(async move {
+                let result = handle_track(state.track_id.fetch_add(1, SeqCst), track, state.clone());
 
-        if let Err(err) = result.await {
-            error!("{}", err);
-            let _ = state
-                .client_send_tx
-                .send(ServerMessage::from(err))
-                .await
-                .map_err(|err| error!("{}", err));
+                if let Err(err) = result.await {
+                    error!("{}", err);
+                    let _ = state
+                        .client_send_tx
+                        .send(ServerMessage::from(err))
+                        .await
+                        .map_err(|err| error!("{}", err));
+                }
+            }.instrument(Span::current()));
         }
-    });
+    }.instrument(Span::current()));
+
+    info!("setting descriptions");
 
     let offer = RTCSessionDescription::offer(body)?;
     peer.set_remote_description(offer).await?;
@@ -350,7 +278,7 @@ async fn whip_post_handler(
     let answer = peer.create_answer(None).await?;
     peer.set_local_description(answer).await?;
 
-    peer.gathering_complete_promise().await.recv().await;
+    peer.on_gathering_complete().await.recv().await;
     info!("Local ICE gathering complete.");
 
     let local_description = peer.local_description().await.ok_or_else(|| {
@@ -360,7 +288,7 @@ async fn whip_post_handler(
         )
     })?;
 
-    info!("WHIP session created.");
+    info!("Peer connection created. Waiting to connect.");
 
     let id = &session_state.session_id;
     Ok(Response::builder()
@@ -370,25 +298,137 @@ async fn whip_post_handler(
         .body(local_description.sdp)?)
 }
 
+async fn handle_data_channel(state: SessionState, mut channel: StatefulDataChannel) -> Result<(), LineTrackingError> {
+    info!(ready_state=?channel.ready_state(), "Data channel connected: {}", &channel.label());
+
+    let label = channel.label().to_string();
+    let errors = channel.errors();
+
+    // Log any errors the data channel encounters.
+    let err_label = label.clone();
+    tokio::spawn(async move {
+        errors
+            .filter_map(async |val| val.map_err(|err| error!("{}", err)).ok())
+            .for_each(move |error| {
+                let err_label = err_label.clone();
+                async move {
+                    error!("Data channel [{}] had error: {}", &err_label, error);
+                }
+            })
+            .instrument(Span::current())
+    }.instrument(Span::current()));
+
+    // Wait for the 'general' data channel to connect and receive messages on the other end of the above channel.
+    match label.as_ref() {
+        // The 'general' data channel is used for signaling between the client / server.
+        "general" => {
+            info!("got general");
+            let (opened, messages) = channel.on_open().await;
+            info!("opened general");
+
+            // spawn a new task and send stuff
+            // Our primary 'send stuff to the client' channel.
+            tokio::spawn(async move {
+                // Take the receiving end of the client send.
+                if let Some(mut rx) = state.client_send_rx.lock().await.take() {
+                    while let Some(data) = rx.recv().await {
+                        match serde_json::to_string(&data) {
+                            Ok(json) => match opened.send_text(json).await {
+                                Ok(_) => info!("Sent message to client [{:?}]", &data),
+                                Err(err) => match err {
+                                    webrtc::Error::ErrClosedPipe => {
+                                        trace!("Datachannel closed. Stopping sending messages to client.");
+                                    }
+                                    _ => error!("Error sending message to client [{}]", err),
+                                },
+                            },
+                            Err(err) => {
+                                error!("Failed to serialize data message. {} {:?}", err, data)
+                            }
+                        }
+                    }
+                } else {
+                    error!("Data channel already initialized [{}]", label);
+                }
+            }.instrument(Span::current()));
+
+            // Handle messages from the client.
+            messages
+                .for_each(async |msg| {
+                    match serde_json::from_slice::<ClientMessage>(&msg.data) {
+                        Err(e) => {
+                            error!("Client did not send valid ClientMessage JSON. [{}]", e)
+                        }
+                        Ok(msg) => match msg {
+                            ClientMessage::SessionEnding => {
+                                info!("Client requested polite closing of connection.");
+                                // state.connection_closed.notify_waiters();
+                            }
+                            ClientMessage::Info { message } => info!("Received message from client: [{message}]"),
+                            ClientMessage::Error { message } => error!("Received error from client: [{message}]"),
+                        },
+                    };
+                })
+                .await;
+        }
+        // Other data channels are dumped directly to disk by id.
+        _ => {
+            // Drain all the messages to disk!
+            let (_, mut messages) = channel.on_open().await;
+
+            let file_path = state.data_path.join(format!("data_{label}.dat"));
+            let mut file_sink = match File::create(&file_path).await {
+                Ok(file) => file,
+                Err(err) => {
+                    return Err(anyhow!("Couldn't create file writer for data channel: [{}] [{}]", label, err).into());
+                }
+            };
+
+            info!("Created data channel file: [{:?}]", file_path);
+
+            let mut msg_count = 0;
+            while let Some(msg) = messages.next().await {
+                info!(size = msg.data.len(), msg.is_string, "Data channel [{}] received packet.", label);
+
+                // Some simple stats logging.
+                msg_count += 1;
+                if msg_count % 100 == 0 {
+                    info!("Data channel [{}] has received {} packets total..", label, msg_count);
+                }
+
+                if msg.is_string {
+                    // state.send_client_or_log_error(format!("Received text encoded data channel packet. \
+                    //     Not supported. First byte should be timestamp. [{}]", channel_label)).await;
+                }
+
+                // Unpack the byte buffer.
+                //  - timestamp - 8 bytes - little endian - nanoseconds since unix epoch
+                //  - payload - remainder - raw data to be written to disk.
+
+                // Each time we hit the first character after a newline, emit new timestamp.
+                // Buuut we can't do that if the UTF8 is partial! damnation.
+
+                // Write data channel raw bytes to the file.
+                if let Err(err) = file_sink.write_all(&msg.data).await {
+                    error!("Failed to write datachannel buffer to disk: [{}] [{err}]", label);
+                }
+            }
+        }
+    }
+
+    Ok(())
+}
+
 /// Handles video tracks that the client sends to us.
-async fn handle_track<'a>(
-    track_id: i8,
-    track: Arc<TrackRemote>,
-    session_id: &'a str,
-    session_state: &mut SessionState,
-) -> Result<(), LineTrackingError> {
-    info!(session_id = %session_id, track_id = %track.id(), kind = ?track.kind(), "Track connected.");
+async fn handle_track(track_id: i8, track: StatefulTrack, session_state: SessionState) -> Result<(), LineTrackingError> {
+    info!(session_state.session_id, track_id = %track.id(), kind = ?track.kind(), "Track connected.");
 
     let codec = track.codec();
     let mime_type = codec.capability.mime_type.to_lowercase();
     info!(%mime_type, clock_rate = codec.capability.clock_rate, "Track codec details.");
 
     if !mime_type.as_str().eq_ignore_ascii_case(media_engine::MIME_TYPE_H264) {
-        return Err(anyhow!(
-            "Video tracks must be in H264 format. [{}] id=[{}]",
-            mime_type,
-            track.id()
-        ).into());
+        return Err(anyhow!("Video tracks must be in H264 format. [{}] id=[{}]", mime_type, track.id()).into());
     }
 
     // Initialize GStreamer
@@ -408,13 +448,9 @@ async fn handle_track<'a>(
         .join(format!("game_capture_{track_id}.mp4"))
         .into_os_string()
         .into_string()
-        .map_err(|e| {
-            anyhow!("Data path [{e:?}] provided for session streamer was not valid UTF8 string.")
-        })?;
+        .map_err(|e| anyhow!("Data path [{e:?}] provided for session streamer was not valid UTF8 string."))?;
 
-    let pipeline_str = format!(
-        "appsrc name=appsrc ! h264parse ! mp4mux name=mux ! filesink location={output_file}",
-    );
+    let pipeline_str = format!("appsrc name=appsrc ! h264parse ! mp4mux name=mux ! filesink location={output_file}",);
 
     info!("Starting pipeline [{}]", &pipeline_str);
 
@@ -424,11 +460,7 @@ async fn handle_track<'a>(
         .unwrap();
 
     // Get the appsrc element
-    let appsrc = pipeline
-        .by_name("appsrc")
-        .unwrap()
-        .downcast::<gstreamer_app::AppSrc>()
-        .unwrap();
+    let appsrc = pipeline.by_name("appsrc").unwrap().downcast::<gstreamer_app::AppSrc>().unwrap();
 
     // Configure the appsrc
     appsrc.set_stream_type(gstreamer_app::AppStreamType::Stream);
@@ -441,60 +473,13 @@ async fn handle_track<'a>(
     appsrc.set_format(gstreamer::Format::Time); // Says that our buffers will have timestamps.
     appsrc.set_is_live(true); // A flag telling downstream pads that we are optimizing for live streaming content.
 
-    // todo: This uses the live timestamp of this process to timestamp the buffers.
-    // We definitely want to manually timestamp each sent buffer from the RTP stream.
-    // Or use the clock rate instead.
-    appsrc.set_do_timestamp(true);
+    // We manually reconstruct the timestamps from received RTP packets. See below.
+    appsrc.set_do_timestamp(false);
 
     // Start the pipeline
     pipeline.set_state(gstreamer::State::Playing)?;
 
     info!("Started gstreamer pipeline: {:?}", pipeline);
-
-    // In handle_track, after starting the pipeline:
-    // let bus = pipeline.bus().expect("Failed to get pipeline bus");
-    // let pipeline_weak = pipeline.downgrade(); // To avoid owning pipeline in the task
-
-    // tokio::spawn(async move {
-    //     let mut bus_stream = bus.stream_filtered();
-    //     while let Some(msg) = bus_stream.next().await {
-    //         if pipeline_weak.upgrade().is_none() {
-    //             info!("Pipeline for bus monitoring no longer exists, exiting bus watch.");
-    //             break;
-    //         }
-    //         match msg.view() {
-    //             gstreamer::MessageView::Error(err) => {
-    //                 error!(
-    //                     "GStreamer Error from {}: {} ({:?})",
-    //                     err.src()
-    //                         .map_or_else(|| "None".to_string(), |s| s.path_string().to_string()),
-    //                     err.error(),
-    //                     err.debug()
-    //                 );
-    //             }
-    //             gstreamer::MessageView::Warning(warning) => {
-    //                 warn!(
-    //                     "GStreamer Warning from {}: {} ({:?})",
-    //                     warning
-    //                         .src()
-    //                         .map_or_else(|| "None".to_string(), |s| s.path_string().to_string()),
-    //                     warning.error(),
-    //                     warning.debug()
-    //                 );
-    //             }
-    //             gstreamer::MessageView::Eos(eos_details) => {
-    //                 info!(
-    //                     "GStreamer EOS received on bus task: {:?}",
-    //                     eos_details.src().map(|s| s.path_string())
-    //                 );
-    //                 // This task can notify the main task that EOS was seen on the bus.
-    //             }
-    //             // Ignore other messages.
-    //             _ => {}
-    //         }
-    //     }
-    //     info!("GStreamer bus monitoring task finished.");
-    // });
 
     session_state
         .client_send_tx
@@ -520,45 +505,54 @@ async fn handle_track<'a>(
     // });
 
     let mut depacketizer = H264Packet::default();
-    let mut packets = 0;
+    let mut rtp_packets = 0;
 
-    loop {
-        tokio::select! {
-            data = track.read_rtp() => {
-                match data {
-                    Ok((packet, _)) => {
-                        trace!("Got rtp packet with sequence number {}, timestamp {}, and payload length {}", packet.header.sequence_number, packet.header.timestamp, packet.payload.len());
+    let id = track.id();
+    let mut packet_stream = track.into_rtp_stream();
+    while let Some(data) = packet_stream.next().await {
+        match data {
+            Ok((packet, _)) => {
+                rtp_packets += 1;
+                trace!(
+                    "Got rtp packet with sequence number {}, timestamp {}, and payload length {}",
+                    packet.header.sequence_number,
+                    packet.header.timestamp,
+                    packet.payload.len()
+                );
 
-                        let h264_bytes = depacketizer.depacketize(&packet.payload)?;
-                        packets += 1;
+                if rtp_packets % 1000 == 0 {
+                    info!("Video track [{}] has received {} packets total..", id, rtp_packets);
+                }
 
-                        if h264_bytes.len() > 0 {
-                            trace!("Got NALU: type={} size={}", h264_bytes[0], h264_bytes.len());
+                if packet.payload.len() == 0 {
+                    trace!("Received RTP packet of size 0. Skipping.");
+                    continue;
+                }
 
-                            let mut buffer = gstreamer::Buffer::from_slice(h264_bytes);
+                let h264_bytes = depacketizer.depacketize(&packet.payload)?;
 
-                            // Our RTP stream timestamps are given in a specific clock rate, passed in above.
-                            // That rate is in Hz, ie 90000Hz, so we convert to nanoseconds.
-                            let timestamp_nanos =  ClockTime::from_nseconds((packet.header.timestamp as u64 * ClockTime::SECOND.nseconds()) / codec.capability.clock_rate as u64);
+                if h264_bytes.len() > 0 {
+                    let mut buffer = gstreamer::Buffer::from_slice(h264_bytes);
 
-                            buffer.get_mut().unwrap().set_pts(Some(timestamp_nanos));
-                            buffer.get_mut().unwrap().set_dts(Some(timestamp_nanos));
-                            appsrc.push_buffer(buffer).expect("Failed to push buffer");
-                        }
-                    }
-                    Err(err) => {
-                        error!("{:?}", err);
-                        break;
-                    }
+                    // Our RTP stream timestamps are given in a specific clock rate, passed in above.
+                    // That rate is in Hz, ie 90000Hz, so we convert to nanoseconds.
+                    let timestamp_nanos = ClockTime::from_nseconds(
+                        (packet.header.timestamp as u64 * ClockTime::SECOND.nseconds()) / codec.capability.clock_rate as u64,
+                    );
+
+                    buffer.get_mut().unwrap().set_pts(Some(timestamp_nanos));
+                    buffer.get_mut().unwrap().set_dts(Some(timestamp_nanos));
+                    appsrc.push_buffer(buffer).expect("Failed to push buffer");
                 }
             }
-            _ = session_state.connection_closed.notified() => {
+            Err(err) => {
+                error!("{:?}", err);
                 break;
             }
-        }
+        };
     }
 
-    info!("Finished receiving RTP stream. Received {packets} packets.");
+    info!("Finished receiving RTP stream. Received {rtp_packets} packets.");
 
     session_state
         .client_send_tx
@@ -580,11 +574,10 @@ async fn handle_track<'a>(
     // Cleanup resources.
     pipeline.set_state(gstreamer::State::Null).unwrap();
 
+    info!("Finished receiving video track. Saved to {output_file}");
+
     // For now, the session closes when the video is finished.
-    session_state
-        .client_send_tx
-        .send(ServerMessage::SessionComplete)
-        .await?;
+    session_state.client_send_tx.send(ServerMessage::SessionComplete).await?;
 
     Ok(())
 }
@@ -617,9 +610,7 @@ fn supported_codecs() -> Vec<RTCRtpCodecParameters> {
                 mime_type: media_engine::MIME_TYPE_H264.to_owned(),
                 clock_rate: 90000,
                 channels: 0,
-                sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f"
-                        .to_owned(),
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42001f".to_owned(),
                 rtcp_feedback: video_rtcp_feedback.clone(),
             },
             payload_type: 102,
@@ -630,9 +621,7 @@ fn supported_codecs() -> Vec<RTCRtpCodecParameters> {
                 mime_type: media_engine::MIME_TYPE_H264.to_owned(),
                 clock_rate: 90000,
                 channels: 0,
-                sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42001f"
-                        .to_owned(),
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42001f".to_owned(),
                 rtcp_feedback: video_rtcp_feedback.clone(),
             },
             payload_type: 127,
@@ -643,9 +632,7 @@ fn supported_codecs() -> Vec<RTCRtpCodecParameters> {
                 mime_type: media_engine::MIME_TYPE_H264.to_owned(),
                 clock_rate: 90000,
                 channels: 0,
-                sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
-                        .to_owned(),
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f".to_owned(),
                 rtcp_feedback: video_rtcp_feedback.clone(),
             },
             payload_type: 125,
@@ -656,9 +643,7 @@ fn supported_codecs() -> Vec<RTCRtpCodecParameters> {
                 mime_type: media_engine::MIME_TYPE_H264.to_owned(),
                 clock_rate: 90000,
                 channels: 0,
-                sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f"
-                        .to_owned(),
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42e01f".to_owned(),
                 rtcp_feedback: video_rtcp_feedback.clone(),
             },
             payload_type: 108,
@@ -669,9 +654,7 @@ fn supported_codecs() -> Vec<RTCRtpCodecParameters> {
                 mime_type: media_engine::MIME_TYPE_H264.to_owned(),
                 clock_rate: 90000,
                 channels: 0,
-                sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42001f"
-                        .to_owned(),
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=0;profile-level-id=42001f".to_owned(),
                 rtcp_feedback: video_rtcp_feedback.clone(),
             },
             payload_type: 127,
@@ -682,9 +665,7 @@ fn supported_codecs() -> Vec<RTCRtpCodecParameters> {
                 mime_type: media_engine::MIME_TYPE_H264.to_owned(),
                 clock_rate: 90000,
                 channels: 0,
-                sdp_fmtp_line:
-                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640032"
-                        .to_owned(),
+                sdp_fmtp_line: "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=640032".to_owned(),
                 rtcp_feedback: video_rtcp_feedback.clone(),
             },
             payload_type: 123,
@@ -704,10 +685,7 @@ where
 {
     fn from(err: T) -> Self {
         error!("{}", err.to_string());
-        AppError(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            anyhow::Error::msg(err.to_string()),
-        )
+        AppError(StatusCode::INTERNAL_SERVER_ERROR, anyhow::Error::msg(err.to_string()))
     }
 }
 
@@ -729,7 +707,6 @@ pub struct LineTrackingError {
     pub error: anyhow::Error,
     pub location: &'static Location<'static>,
 }
-
 
 impl<E> From<E> for LineTrackingError
 where
@@ -766,8 +743,7 @@ pub fn default_process_setup() {
 
     // Command line logging settings:
     // By default, set gstreamer to warn because it's quite noisy.
-    let cli_log_settings =
-        EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,gstreamer=warn"));
+    let cli_log_settings = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,gstreamer=warn"));
 
     tracing_subscriber::registry()
         .with(

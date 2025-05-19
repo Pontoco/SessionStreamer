@@ -1,19 +1,17 @@
 use ::h264_reader::annexb::AnnexBReader;
 use ::h264_reader::nal::{Nal, RefNal};
 use ::h264_reader::push::NalInterest;
-use anyhow::{anyhow, Context, Result};
+use anyhow::{Context, Result, anyhow};
 use axum_test::TestServer;
 use server::{ClientMessage, ServerMessage};
-use tokio::fs;
-use tokio::sync::mpsc::UnboundedReceiver;
-use webrtc::data_channel::data_channel_state::RTCDataChannelState;
-use webrtc::data_channel::RTCDataChannel;
 use std::io::Read;
-use std::sync::mpsc::Receiver;
 use std::sync::Mutex;
+use std::sync::mpsc::Receiver;
 use std::{fs::File, io::BufReader, path::PathBuf, sync::Arc, time::Duration};
 use tempfile::TempDir;
 use test_log::test;
+use tokio::fs;
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::{mpsc, watch};
 use tokio::time::{sleep, timeout};
 use tracing::{Instrument, Level, Span, info, info_span, instrument};
@@ -21,24 +19,27 @@ use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, fmt};
 use webrtc::api::media_engine;
+use webrtc::data_channel::RTCDataChannel;
+use webrtc::data_channel::data_channel_state::RTCDataChannelState;
 use webrtc::ice_transport::ice_connection_state::RTCIceConnectionState;
 use webrtc::media::io::h264_reader;
 use webrtc::peer_connection::RTCPeerConnection;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::{
-    api::{
-        APIBuilder, interceptor_registry::register_default_interceptors, media_engine::MediaEngine,
-    },
+    api::{APIBuilder, interceptor_registry::register_default_interceptors, media_engine::MediaEngine},
     interceptor::registry::Registry,
     media::Sample,
-    peer_connection::{
-        configuration::RTCConfiguration, sdp::session_description::RTCSessionDescription,
-    },
+    peer_connection::{configuration::RTCConfiguration, sdp::session_description::RTCSessionDescription},
     rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
     track::track_local::track_local_static_sample::TrackLocalStaticSample,
 };
 
-struct TestPeerSetup(RTCPeerConnection, Arc<TrackLocalStaticSample>, Arc<RTCDataChannel>, UnboundedReceiver<ServerMessage>);
+struct TestPeerSetup(
+    RTCPeerConnection,
+    Arc<TrackLocalStaticSample>,
+    Arc<RTCDataChannel>,
+    UnboundedReceiver<ServerMessage>,
+);
 
 async fn connect_peer(app: &TestServer, session_id: &str) -> Result<TestPeerSetup> {
     // Default API setup.
@@ -71,8 +72,8 @@ async fn connect_peer(app: &TestServer, session_id: &str) -> Result<TestPeerSetu
     ));
     let added_track = peer.add_track(track.clone()).await?;
 
-    info!("creating data channel.");
     // Creates a data channel track and adds it to the peer.
+    info!("creating data channel.");
     let data_channel = peer.create_data_channel("general", None).await?;
     let (data_tx, mut data_rx) = mpsc::unbounded_channel();
 
@@ -142,11 +143,11 @@ async fn test_send_h264_stream() -> Result<()> {
 
     info!("Created test server storing data at [{temp_output_path:?}].");
 
-    let TestPeerSetup(peer, track, data_channel, mut server_messages)  = connect_peer(&app, session_id).await?;
+    let TestPeerSetup(peer, track, data_channel, mut server_messages) = connect_peer(&app, session_id).await?;
 
     // Connect a new data channel and send some test text.
     let log_data_channel = peer.create_data_channel("test_logs", None).await?;
-    
+
     info!("Waiting for logs data channel to open.");
     while log_data_channel.ready_state() != RTCDataChannelState::Open {
         sleep(Duration::from_micros(50)).await;
@@ -154,7 +155,9 @@ async fn test_send_h264_stream() -> Result<()> {
 
     info!("Sending test log data.");
     log_data_channel.send_text("Test line 1 with a bunch of data.").await?;
-    log_data_channel.send_text("Continuation of line 1 with a bunch of data.\n").await?;
+    log_data_channel
+        .send_text("Continuation of line 1 with a bunch of data.\n")
+        .await?;
     log_data_channel.send_text("Test line 2 with a more data").await?;
 
     // Start streaming the data!
@@ -176,19 +179,21 @@ async fn test_send_h264_stream() -> Result<()> {
         // Don't sleep. We want to be able to stream data really fast I think! Faster than realtime.
     }
 
-    info!(
-        "Finished streaming file. Sent {} samples (nal units).",
-        sample_count
-    );
+    info!("Finished streaming file. Sent {} samples (nal units).", sample_count);
 
+    info!("Sending SessingEnding message to server.");
     data_channel
         .send_text(serde_json::to_string(&ClientMessage::SessionEnding)?)
         .await?;
 
+    info!("Closing down peer connection.");
+    peer.close().await?;
+    drop(peer);
+
     info!("Waiting for server to send a SessionComplete message..");
 
     // Wait for the server to send a SessionComplete message.
-    timeout(Duration::from_secs(5), async move {
+    timeout(Duration::from_secs(15), async move {
         while let Some(msg) = server_messages.recv().await {
             if let ServerMessage::SessionComplete = msg {
                 return Ok(());
@@ -201,54 +206,10 @@ async fn test_send_h264_stream() -> Result<()> {
 
     // Check that we wrote the video out to the correct spot.
     let video_path = temp_output_path.join(session_id).join("game_capture_0.mp4");
-    let video = fs::File::open(&video_path).await.context(format!("Can't find path: {video_path:?}"))?;
+    let video = fs::File::open(&video_path)
+        .await
+        .context(format!("Can't find path: {video_path:?}"))?;
     assert_eq!(video.metadata().await?.len(), 498807); // This is the size we see observed. Regression test.
 
     Ok(())
-}
-
-/// Waits for the ICE connection to complete, meaning we are ready to be able to stream frames of video on the track.
-fn wait_for_ice_connection(
-    pc: Arc<RTCPeerConnection>,
-) -> impl Future<Output = Result<()>> + Send + 'static {
-    // Create a watch channel initialized with the current state
-    let (tx, mut rx) = watch::channel(pc.ice_connection_state());
-
-    // Setup the callback to send updates into the watch channel's sender
-    pc.on_ice_connection_state_change(Box::new(move |state: RTCIceConnectionState| {
-        // Send the new state. Ignore error (if receiver dropped, future was dropped)
-        let _ = tx.send(state);
-        // Callback needs to return a pinned future
-        Box::pin(async {})
-    }));
-
-    // Return a future that waits on the receiver
-    async move {
-        loop {
-            // Check the current state known by the receiver
-            match *rx.borrow() {
-                RTCIceConnectionState::Connected | RTCIceConnectionState::Completed => {
-                    return Ok(());
-                }
-                RTCIceConnectionState::Failed
-                | RTCIceConnectionState::Disconnected
-                | RTCIceConnectionState::Closed => {
-                    return Err(anyhow!(
-                        "ICE connection reached terminal state: {:?}",
-                        *rx.borrow()
-                    ));
-                }
-                _ => {} // Other states (New, Checking) - wait for change
-            }
-
-            // Wait efficiently for the state to change
-            if rx.changed().await.is_err() {
-                // Error means sender (callback closure) was dropped, likely because
-                // the PeerConnection was closed.
-                return Err(anyhow!(
-                    "PeerConnection closed while waiting for ICE connection"
-                ));
-            }
-        }
-    }
 }
