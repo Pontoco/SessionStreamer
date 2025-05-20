@@ -8,7 +8,7 @@ use std::path::PathBuf;
 
 #[derive(Parser, Debug)]
 struct CommandLineArgs {
-    #[arg(default_value = "./data/")]
+    #[arg(long, default_value = "./data/")]
     pub data_path: PathBuf,
     #[arg(long)]
     pub use_structured_logging: bool
