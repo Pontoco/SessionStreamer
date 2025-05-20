@@ -11,8 +11,7 @@ COPY ./vendor ./vendor
 
 RUN cd server && cargo chef prepare --recipe-path recipe.json
 
-FROM chef as builder
-
+FROM --platform=linux/amd64 chef as builder
 
 # Install build dependencies for Rust and GStreamer
 RUN apt-get update && apt-get install -y \
@@ -39,7 +38,7 @@ COPY ./server .
 RUN cargo build --release --bin main
 
 # ---- Runner Stage ----
-FROM debian:bookworm-slim
+FROM --platform=linux/amd64 debian:bookworm-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -67,7 +66,10 @@ WORKDIR /usr/src/app
 # Adjust 'server' if your binary name is different
 COPY --from=builder /usr/src/app/server/target/release/main .
 
-# Expose the port. Cloud Run uses the PORT env var to route traffic.
+# Expose the port. 
 EXPOSE 3000
 
-CMD ["/usr/src/app/main"]
+# Use a more detailed logging for the server by default.
+ENV RUST_LOG "info,gstreamer=warn,server=debug"
+
+ENTRYPOINT ["/usr/src/app/main", "--use-structured-logging"]

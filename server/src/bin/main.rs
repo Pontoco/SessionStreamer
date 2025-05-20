@@ -10,14 +10,18 @@ use std::path::PathBuf;
 struct CommandLineArgs {
     #[arg(default_value = "./data/")]
     pub data_path: PathBuf,
+    #[arg(long)]
+    pub use_structured_logging: bool
 }
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    server::default_process_setup();
+    let args = CommandLineArgs::parse(); // If needed, pass args.data_path to create_server
+
+    server::default_process_setup(args.use_structured_logging);
 
     info!("Starting server...");
-    let args = CommandLineArgs::parse(); // If needed, pass args.data_path to create_server
+    info!("CLI Args: [{:?}]", args);
 
     if let Err(err) = fs::create_dir(&args.data_path).await {
         if err.kind() != io::ErrorKind::AlreadyExists {

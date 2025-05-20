@@ -10,8 +10,8 @@ use tokio_stream::wrappers::{BroadcastStream, UnboundedReceiverStream};
 use tracing::{Instrument, Span, debug, info, info_span};
 use webrtc::{
     data_channel::{RTCDataChannel, data_channel_message::DataChannelMessage, data_channel_state::RTCDataChannelState},
-    interceptor,
-    interceptor::Attributes,
+    ice_transport::ice_candidate::RTCIceCandidate,
+    interceptor::{self, Attributes},
     peer_connection::{
         RTCPeerConnection, offer_answer_options::RTCAnswerOptions, peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription,
@@ -77,16 +77,24 @@ impl StatefulPeerConnection {
         let span = Span::current().clone();
         peer.dtls_transport().on_state_change(Box::new(move |ice| {
             let _span = span.clone().entered();
-            info!("!!!!!!!!!!! DTLS Connection State: {}", ice);
-            info!("!!!!!!!!!!! DTLS Connection State: {}", ice);
-            info!("!!!!!!!!!!! DTLS Connection State: {}", ice);
-            info!("!!!!!!!!!!! DTLS Connection State: {}", ice);
             Box::pin(async move {})
         }));
 
         peer.on_peer_connection_state_change(Box::new(move |peer_state| {
             info!("RTCPeerConnection state updated: {}", peer_state);
             let _ = tx_conn_state.send(peer_state);
+            Box::pin(async move {})
+        }));
+
+        peer.on_ice_candidate(Box::new(move |ice_candidate| {
+            match ice_candidate {
+                None => {
+                    debug!("ICE Candidate gathering is complete.");
+                }
+                Some(candidate) => {
+                    debug!("Found new ICE Candidate: [{}] [{:?}]", candidate.address, candidate);
+                }
+            }
             Box::pin(async move {})
         }));
 
@@ -190,7 +198,6 @@ impl StatefulDataChannel {
         let span = Span::current().clone();
         data_channel.on_open(Box::new(move || {
             let _span = span.entered();
-            info!("ONOPEN");
             // Receiver was dropped. This means that the statefuldatachannel was dropped too.
             let _ = tx_open.send(());
             Box::pin(async {})
@@ -204,7 +211,6 @@ impl StatefulDataChannel {
         let span = Span::current().clone();
         data_channel.on_message(Box::new(move |msg| {
             let _span = span.clone().entered();
-            info!("got msg");
             // Ignore error: If the receiver has hung up, the stream was dropped,
             // so the messages are no longer requested. Nothing to do here.
             let _ = sender.send(msg);

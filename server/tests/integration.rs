@@ -122,7 +122,7 @@ async fn connect_peer(app: &TestServer, session_id: &str) -> Result<TestPeerSetu
 #[tokio::test]
 #[instrument(skip_all)]
 async fn test_send_h264_stream() -> Result<()> {
-    server::default_process_setup();
+    server::default_process_setup(false);
 
     let temp_output_dir = TempDir::with_prefix("session_streamer_data")?;
     let temp_output_path = temp_output_dir.path();

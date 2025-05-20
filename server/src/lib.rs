@@ -13,14 +13,14 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::panic::Location;
 use std::path::PathBuf;
+use std::sync::Arc;
 use std::sync::atomic::AtomicI8;
 use std::sync::atomic::Ordering::SeqCst;
-use std::sync::{Arc};
 use std::time::Duration;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
-use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::sync::Mutex;
+use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::sleep;
 use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
@@ -32,6 +32,7 @@ use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::{APIBuilder, interceptor_registry, media_engine};
+use webrtc::ice_transport::ice_server::RTCIceServer;
 use webrtc::interceptor::registry::Registry;
 use webrtc::peer_connection::configuration::RTCConfiguration;
 use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
@@ -130,7 +131,8 @@ async fn whip_post_handler(
     Query(query_params): Query<HashMap<String, String>>,
     body: String,
 ) -> Result<impl IntoResponse, AppError> {
-    info!("Received new whip request");
+    debug!("Received WHIP request.");
+
     ensure_app(
         content_type == "application/sdp".parse()?,
         StatusCode::UNSUPPORTED_MEDIA_TYPE,
@@ -149,13 +151,17 @@ async fn whip_post_handler(
     let session_id = query_params["session_id"].clone();
     let data_path = state.data_path.join(&session_id);
     if fs::try_exists(&data_path).await? {
-        return Err(AppError(
+        return Err(AppError::new(
             StatusCode::CONFLICT,
             anyhow!("Session ID already exists! [{}] path: [{:?}]", &session_id, &data_path),
         ));
     }
     fs::create_dir(&data_path).await?;
 
+    info!("Created new game streaming session: {}", &session_id);
+
+    // todo! It's important that this gets cancelled on drop.
+    // Right now we have a memory leak if we hit an error, because the spawned tasks will not be killed.
     let graceful_shutdown_src = CancellationToken::new();
 
     let session_state = SessionState {
@@ -171,17 +177,28 @@ async fn whip_post_handler(
     fs::write(session_state.data_path.join("metadata.json"), serde_json::to_string(&query_params)?).await?;
 
     // Boot up a new WebRTC peer connection to attach to the client.
-    let config = RTCConfiguration { ..Default::default() };
+    let config = RTCConfiguration {
+        ice_servers: vec![RTCIceServer {
+            urls: vec![
+                "stun:stun.l.google.com:19302".to_owned(),
+                "stun:stun1.l.google.com:19302".to_owned(),
+            ],
+            ..Default::default()
+        }],
+        ..Default::default()
+    };
+
+    debug!("Using STUN servers: {:?}", &config.ice_servers);
 
     let peer = StatefulPeerConnection::new(
         state
             .rtc
             .new_peer_connection(config)
             .await
-            .map_err(|e| AppError(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?,
+            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?,
     );
 
-    info!("peer connection created");
+    debug!("Peer Connection created.");
 
     // Buffer an initial message that will be sent once our general data channel is connected.
     session_state
@@ -190,8 +207,6 @@ async fn whip_post_handler(
             message: "Connected to general data channel!".into(),
         })
         .await?;
-
-    info!("registering callbacks");
 
     // Echo state changes
     let mut state_stream = WatchStream::new(peer.state.clone());
@@ -208,7 +223,6 @@ async fn whip_post_handler(
 
     // Branch off a new task for each data channel.
     let state = session_state.clone();
-
     let graceful_shutdown = graceful_shutdown_src.clone();
     let final_channels = tokio::spawn(
         async move {
@@ -272,8 +286,9 @@ async fn whip_post_handler(
         .instrument(Span::current()),
     );
 
-    info!("setting descriptions");
+    debug!("Setting remote and local descriptions.");
 
+    trace!("Received offer: {}", &body);
     let offer = RTCSessionDescription::offer(body)?;
     peer.set_remote_description(offer).await?;
 
@@ -281,16 +296,15 @@ async fn whip_post_handler(
     peer.set_local_description(answer).await?;
 
     peer.on_gathering_complete().await.recv().await;
-    info!("Local ICE gathering complete.");
 
     let local_description = peer.local_description().await.ok_or_else(|| {
-        AppError(
+        AppError::new(
             StatusCode::INTERNAL_SERVER_ERROR,
             anyhow::anyhow!("Local description did not get set properly."),
         )
     })?;
 
-    info!("Peer connection created. Waiting to connect.");
+    info!("ICE gathering complete. Waiting to connect...");
 
     // Close the connection manually if the client requests it.
     // This is necessary because webrtc-rs does not properly handle the close_notify alert on the underlying data transport.
@@ -319,6 +333,9 @@ async fn whip_post_handler(
                     }
                 }
             }
+
+            // Start graceful shutdown if we haven't already.
+            graceful_shutdown_src.cancel();
 
             // Wait for all data channel tasks to cleanup and finish.
             // Wait for all track tasks to cleanup and finish.
@@ -456,7 +473,7 @@ async fn handle_data_channel(
                         ClientMessage::Error { message } => error!("Received error from client: [{message}]"),
                     },
                 };
-            };
+            }
         }
         // Other data channels are dumped directly to disk by id.
         _ => {
@@ -475,7 +492,7 @@ async fn handle_data_channel(
 
             let mut msg_count = 0;
             while let Some(msg) = graceful_shutdown.run_until_cancelled(messages.next()).await.flatten() {
-                info!(size = msg.data.len(), msg.is_string, "Data channel [{}] received packet.", label);
+                trace!(size = msg.data.len(), msg.is_string, "Data channel [{}] received packet.", label);
 
                 // Some simple stats logging.
                 msg_count += 1;
@@ -507,7 +524,12 @@ async fn handle_data_channel(
 }
 
 /// Handles video tracks that the client sends to us.
-async fn handle_track(track_id: i8, track: StatefulTrack, session_state: SessionState, graceful_shutdown: CancellationToken) -> Result<(), LineTrackingError> {
+async fn handle_track(
+    track_id: i8,
+    track: StatefulTrack,
+    session_state: SessionState,
+    graceful_shutdown: CancellationToken,
+) -> Result<(), LineTrackingError> {
     info!(session_state.session_id, track_id = %track.id(), kind = ?track.kind(), "Track connected.");
 
     let codec = track.codec();
@@ -762,13 +784,20 @@ fn supported_codecs() -> Vec<RTCRtpCodecParameters> {
 // -----
 
 struct AppError(StatusCode, anyhow::Error);
+impl AppError {
+
+    fn new(status_code: StatusCode, err: anyhow::Error) -> Self {
+        info!("Responding with error: {}", err.to_string());
+        AppError(status_code, err)
+    }
+}
 
 impl<T> From<T> for AppError
 where
     T: std::error::Error + Send + Sync + 'static,
 {
     fn from(err: T) -> Self {
-        error!("{}", err.to_string());
+        info!("Responding with error: {}", err.to_string());
         AppError(StatusCode::INTERNAL_SERVER_ERROR, anyhow::Error::msg(err.to_string()))
     }
 }
@@ -812,19 +841,23 @@ impl std::fmt::Display for LineTrackingError {
     }
 }
 
-pub fn default_process_setup() {
+pub fn default_process_setup(use_structured_logging: bool) {
     // Send top-level panics to tracing log (via log).
     log_panics::init();
 
     // Command line logging settings:
     // By default, set gstreamer to warn because it's quite noisy.
+    // Filter using the environment vairable RUST_LOG)
     let cli_log_settings = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,gstreamer=warn"));
 
+    let format_layer = if use_structured_logging {
+        // tracing_subscriber::fmt::layer().json().boxed()
+        tracing_stackdriver::layer().boxed()
+    } else {
+        tracing_subscriber::fmt::layer().compact().boxed()
+    };
+
     tracing_subscriber::registry()
-        .with(
-            tracing_subscriber::fmt::layer()
-                .compact() // Log compactly
-                .with_filter(cli_log_settings), // Filter using the environment vairable RUST_LOG
-        )
+        .with(format_layer.with_filter(cli_log_settings))
         .init();
 }
