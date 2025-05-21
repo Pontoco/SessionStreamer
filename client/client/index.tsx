@@ -1,4 +1,16 @@
-import { createResource, For, Show, createMemo } from 'solid-js';
+import { createResource, For, Show, createMemo, createSignal } from 'solid-js';
+import {
+  createSolidTable,
+  getCoreRowModel,
+  getSortedRowModel,
+  getFilteredRowModel,
+  flexRender,
+} from '@tanstack/solid-table';
+import type {
+  ColumnDef,
+  SortingState,
+  ColumnFiltersState,
+} from '@tanstack/solid-table';
 import { render } from 'solid-js/web';
 import { Router, Route, A } from '@solidjs/router'; // Router is likely a function, Link a component
 import type { JSX } from 'solid-js';
@@ -8,6 +20,7 @@ interface SessionMetadata {
   session_id: string;
   timestamp: string; // Added for RFC3339 timestamp
   formattedTimestamp?: string; // Added for human-readable version, optional
+  username?: string; // Added for clarity, though [key: string] would cover it
   [key: string]: any;
 }
 
@@ -27,6 +40,8 @@ async function fetchSessions(): Promise<SessionMetadata[]> {
 
 function SessionListPage(): JSX.Element {
   const [sessions] = createResource(fetchSessions);
+  const [sorting, setSorting] = createSignal<SortingState>([]);
+  const [columnFilters, setColumnFilters] = createSignal<ColumnFiltersState>([]);
 
   // Helper function to format RFC3339 timestamp to a human-readable string
   function formatTimestamp(rfc3339Timestamp?: string): string {
@@ -61,50 +76,51 @@ function SessionListPage(): JSX.Element {
       }));
   });
 
-  const getMetadataKeys = (): string[] => {
-    const s = sessions(); // Use raw sessions to get original keys
-    if (s && s.length > 0) {
-      const allKeys = new Set<string>();
-      // Collect all unique keys from the raw session data
-      s.forEach(session => {
-        Object.keys(session).forEach(key => {
-          // Exclude our derived 'formattedTimestamp' if it somehow got into raw data
-          if (key !== 'formattedTimestamp') {
-            allKeys.add(key);
-          }
-        });
-      });
+  const columns = createMemo<ColumnDef<SessionMetadata>[]>(() => [
+    {
+      accessorKey: 'session_id',
+      header: 'Session ID',
+      cell: info => <A href={`/session/${info.getValue()}`}>{String(info.getValue())}</A>,
+      enableSorting: true,
+      enableColumnFilter: true,
+    },
+    {
+      accessorKey: 'formattedTimestamp',
+      header: 'Timestamp',
+      cell: info => String(info.getValue() ?? ''),
+      enableSorting: true,
+      enableColumnFilter: true,
+    },
+    {
+      accessorKey: 'username',
+      header: 'Username',
+      cell: info => String(info.getValue() ?? ''),
+      enableSorting: true,
+      enableColumnFilter: true,
+    },
+    {
+      accessorKey: 'timestamp',
+      header: 'Raw Timestamp',
+      cell: info => String(info.getValue() ?? ''),
+      enableSorting: true,
+      enableColumnFilter: true,
+    },
+  ]);
 
-      const baseKeys = Array.from(allKeys);
-      let orderedKeys: string[] = [];
-
-      // 1. session_id (if exists)
-      if (baseKeys.includes('session_id')) {
-        orderedKeys.push('session_id');
-      }
-
-      // 2. "Timestamp" (this is the header for our human-friendly session.formattedTimestamp)
-      orderedKeys.push('Timestamp');
-
-      // 3. Specific keys in preferred order (e.g., username, raw timestamp)
-      //    Ensure 'timestamp' (raw RFC3339) is included as requested.
-      const specificKeyOrder = ['username', 'timestamp'];
-      specificKeyOrder.forEach(key => {
-        if (baseKeys.includes(key) && !orderedKeys.includes(key)) {
-          orderedKeys.push(key);
-        }
-      });
-
-      // 4. Add remaining keys, sorted alphabetically
-      baseKeys
-        .filter(key => !orderedKeys.includes(key))
-        .sort()
-        .forEach(key => orderedKeys.push(key));
-      
-      return orderedKeys;
-    }
-    return [];
-  };
+  const table = createSolidTable({
+    get data() { return processedSessions(); },
+    get columns() { return columns(); },
+    state: {
+      get sorting() { return sorting(); },
+      get columnFilters() { return columnFilters(); },
+    },
+    onSortingChange: setSorting,
+    onColumnFiltersChange: setColumnFilters,
+    getCoreRowModel: getCoreRowModel(),
+    getSortedRowModel: getSortedRowModel(),
+    getFilteredRowModel: getFilteredRowModel(),
+    // debugTable: true, // Uncomment for debugging
+  });
 
   return (
     <div style={{ padding: '20px' }}>
@@ -113,26 +129,49 @@ function SessionListPage(): JSX.Element {
         <Show when={sessions() && sessions()!.length > 0} fallback={<p>No sessions found.</p>}>
           <table style={{ width: '100%', 'border-collapse': 'collapse', border: '1px solid #ddd' }}>
             <thead>
-              <tr>
-                <For each={getMetadataKeys()}>
-                  {(key: string) => <th style={{ padding: '8px', border: '1px solid #ddd', 'background-color': '#f2f2f2' }}>{key}</th>}
-                </For>
-              </tr>
+              <For each={table.getHeaderGroups()}>
+                {headerGroup => (
+                  <tr>
+                    <For each={headerGroup.headers}>
+                      {header => (
+                        <th style={{ padding: '8px', border: '1px solid #ddd', 'background-color': '#f2f2f2', 'vertical-align': 'top' }}>
+                          <div
+                            style={{ cursor: header.column.getCanSort() ? 'pointer' : 'default', 'user-select': 'none' }}
+                            onClick={header.column.getToggleSortingHandler()}
+                          >
+                            {flexRender(header.column.columnDef.header, header.getContext())}
+                            {{
+                              asc: ' 🔼',
+                              desc: ' 🔽',
+                            }[header.column.getIsSorted() as string] ?? ''}
+                          </div>
+                          {header.column.getCanFilter() ? (
+                            <div style={{ 'margin-top': '4px' }}>
+                              <input
+                                type="text"
+                                value={(header.column.getFilterValue() ?? '') as string}
+                                onInput={e => header.column.setFilterValue(e.currentTarget.value)}
+                                placeholder={`Filter...`}
+                                style={{ width: 'calc(100% - 10px)', padding: '2px 4px', 'box-sizing': 'border-box' }}
+                                onClick={e => e.stopPropagation()} // Prevent sort when clicking filter input
+                              />
+                            </div>
+                          ) : null}
+                        </th>
+                      )}
+                    </For>
+                  </tr>
+                )}
+              </For>
             </thead>
             <tbody>
-              <For each={processedSessions()}>
-                {(session: SessionMetadata) => ( // session type now includes formattedTimestamp via SessionMetadata interface update
+              <For each={table.getRowModel().rows}>
+                {row => (
                   <tr>
-                    <For each={getMetadataKeys()}>
-                      {(key: string) => (
+                    <For each={row.getVisibleCells()}>
+                      {cell => (
                         <td style={{ padding: '8px', border: '1px solid #ddd' }}>
-                          {key === 'session_id' ? (
-                            <A href={`/session/${session.session_id}`}>{String(session.session_id)}</A>
-                          ) : key === 'Timestamp' ? ( // Display the formatted timestamp
-                            String(session.formattedTimestamp === undefined ? '' : session.formattedTimestamp)
-                          ) : ( // Display other keys, including the raw 'timestamp'
-                            String(session[key] === undefined ? '' : session[key])
-                          )}
+                          {flexRender(cell.column.columnDef.cell, cell.getContext())}
                         </td>
                       )}
                     </For>
