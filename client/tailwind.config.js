@@ -1,7 +1,12 @@
 /**@type {import("tailwindcss").Config} */
 module.exports = {
   darkMode: ["variant", [".dark &", '[data-kb-theme="dark"] &']],
-  content: ["./src/**/*.{ts,tsx}"],
+  content: [
+    "./index.html",
+    "./*.{ts,tsx}",
+    "./src/**/*.{ts,tsx}",
+    "./components/**/*.{ts,tsx}",
+  ],
   theme: {
     container: {
       center: true,
