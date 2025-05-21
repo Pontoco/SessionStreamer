@@ -1,6 +1,7 @@
 dependencies:
   - gitSource:
-      repository: projects/sessionstreamer/locations/us-central1/connections/Github/repositories/Pontoco-SessionStreamer
+      repository:
+        developerConnect: 'projects/sessionstreamer/locations/us-central1/connections/Github/gitRepositoryLinks/Pontoco-SessionStreamer'
       revision: deploy
       recurseSubmodules: true
       depth: 1
