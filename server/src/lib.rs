@@ -1,15 +1,17 @@
 mod webrtc_utils;
+mod rest;
 
 use anyhow::{Result, anyhow};
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::post;
+use axum::routing::{get, post};
 use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
 use futures::{StreamExt, TryFutureExt};
 use gstreamer::{ClockTime, MessageType, prelude::*};
 use serde::{Deserialize, Serialize};
+use tower_http::services::ServeDir;
 use std::collections::HashMap;
 use std::panic::Location;
 use std::path::PathBuf;
@@ -109,13 +111,16 @@ pub fn create_server(data_path: impl Into<PathBuf>) -> Result<axum::Router> {
     let api = APIBuilder::new().with_media_engine(m).with_interceptor_registry(registry).build();
 
     // Setup the axum server.
+    let data_path = data_path.into();
     let state = AppState {
         rtc: Arc::new(api),
-        data_path: data_path.into(),
+        data_path: data_path.clone(),
     };
 
     Ok(axum::Router::new()
+        .nest_service("/data", ServeDir::new(data_path))
         .route("/whip", post(whip_post_handler))
+        .nest("/rest", rest::routes())
         .layer(
             trace::TraceLayer::new_for_http()
                 .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))

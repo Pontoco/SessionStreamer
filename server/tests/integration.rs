@@ -147,7 +147,7 @@ async fn test_send_h264_stream() -> Result<()> {
     log_data_channel.send_text("Test line 2 with a more data").await?;
 
     // Start streaming the data!
-    let h264_data = BufReader::new(File::open("./h264-sample.h264")?);
+    let h264_data = BufReader::new(File::open("./tests/h264-sample.h264")?);
     let mut h264reader = h264_reader::H264Reader::new(h264_data, 1024 * 1024);
     let mut sample_count = 0;
     while let Ok(nal) = h264reader.next_nal() {
