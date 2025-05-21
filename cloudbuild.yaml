@@ -1,12 +1,23 @@
-dependencies:
-  - gitSource:
-      repository:
-        developerConnect: 'projects/sessionstreamer/locations/us-central1/connections/github/repositories/session'
-      revision: deploy
-      recurseSubmodules: true
-      depth: 1
-      destPath: .
 steps:
+  # Step 1: Initialize the specific submodule (or all)
+  - name: 'gcr.io/cloud-builders/git'
+    args: ['submodule', 'init', 'vendor/webrtc'] # Initialize only the one you're changing
+    # Or to initialize all: ['submodule', 'init']
+
+  # Step 2: Set the new URL for the submodule
+  - name: 'gcr.io/cloud-builders/git'
+    args:
+      - 'submodule'
+      - 'set-url'
+      - '--' # Indicates end of options, path and URL follow
+      - 'vendor/webrtc' # Path to your submodule
+      - 'https://github.com/Kleptine/webrtc.git' # The new HTTPS URL
+
+  # Step 3: Update the submodule (it will now use the overridden URL)
+  - name: 'gcr.io/cloud-builders/git'
+    args: ['submodule', 'update', '--recursive', 'vendor/webrtc'] # Update the specific submodule
+    # Or to update all (including any others): ['submodule', 'update', '--init', '--recursive']
+
   - name: gcr.io/cloud-builders/docker
     args:
       - build
