@@ -11,7 +11,7 @@ COPY ./vendor ./vendor
 
 RUN cd server && cargo chef prepare --recipe-path recipe.json
 
-FROM --platform=linux/amd64 chef as builder
+FROM chef as builder
 
 # Install build dependencies for Rust and GStreamer
 RUN apt-get update && apt-get install -y \
@@ -48,7 +48,7 @@ RUN /root/.deno/bin/deno install
 RUN /root/.deno/bin/deno run build
 
 # ---- Runner Stage ----
-FROM --platform=linux/amd64 debian:bookworm-slim
+FROM debian:bookworm-slim
 
 # Install runtime dependencies
 RUN apt-get update && apt-get install -y --no-install-recommends \
