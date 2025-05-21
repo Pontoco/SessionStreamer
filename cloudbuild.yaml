@@ -24,6 +24,8 @@ steps:
       - build
       - '-t'
       - '$_IMAGE_NAME:$COMMIT_SHA'
+      - '--cache-from'
+      - '$_IMAGE_NAME:latest' # use the latest tagged image to pull cached layers from
       - .
       - '-f'
       - $_DOCKERFILE_NAME
