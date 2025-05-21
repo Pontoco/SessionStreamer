@@ -1,5 +1,5 @@
 import { useParams } from '@solidjs/router';
-import { createResource, Show, createSignal, createMemo } from 'solid-js';
+import { createResource, Show, createSignal, createMemo, onCleanup, createEffect } from 'solid-js';
 import type { JSX } from 'solid-js';
 import { SolidLogViewer, type LogEntry } from '../components/SolidLogViewer';
 
@@ -47,6 +47,10 @@ export default function SessionDetailPage(): JSX.Element {
   const [rawLogContent] = createResource(() => sessionData()?.log_url, fetchLogContent);
   const [showTimestamps, setShowTimestamps] = createSignal(false);
   const [filterText, setFilterText] = createSignal('');
+  const [scrollWithVideo, setScrollWithVideo] = createSignal(true);
+  const [targetLogIndexToScroll, setTargetLogIndexToScroll] = createSignal<number | null>(null);
+
+  let videoRef: HTMLVideoElement | undefined;
 
   const logLineRegex = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+[+-]\d{2}:\d{2})\s*(.*)$/;
 
@@ -81,6 +85,74 @@ export default function SessionDetailPage(): JSX.Element {
     return allLogs.filter(log => log.message.toLowerCase().includes(term));
   });
 
+  createEffect(() => {
+    const sData = sessionData();
+    const videoElement = videoRef;
+
+    if (!videoElement || !sData || !sData.metadata.timestamp || !scrollWithVideo()) {
+      // If not scrolling with video, or necessary data/refs are missing, do nothing.
+      // Or remove listener if it was previously attached and scrollWithVideo is now false.
+      if (videoElement && videoElement.onplay) { // Check if a handler was attached
+        // How to properly remove specific handler if we don't store it?
+        // For now, this effect reruns and won't add if scrollWithVideo is false.
+      }
+      return;
+    }
+
+    const baseTimestampStr = sData.metadata.timestamp as string; // Already confirmed it's a string
+    let baseTimeMs: number;
+    try {
+      baseTimeMs = Date.parse(baseTimestampStr);
+      if (isNaN(baseTimeMs)) {
+        console.error("Invalid base timestamp in metadata:", baseTimestampStr);
+        return;
+      }
+    } catch (e) {
+      console.error("Error parsing base timestamp:", baseTimestampStr, e);
+      return;
+    }
+
+    const handleTimeUpdate = () => {
+      if (!videoElement) return;
+      const currentVideoTimeMs = videoElement.currentTime * 1000;
+      const currentAbsoluteTime = new Date(baseTimeMs + currentVideoTimeMs);
+      
+      const logs = processedLogs();
+      if (!logs.length) {
+        setTargetLogIndexToScroll(null);
+        return;
+      }
+
+      let foundIndex: number | null = null;
+      // Iterate backwards to find the last log entry at or before the current video time
+      for (let i = logs.length - 1; i >= 0; i--) {
+        const log = logs[i];
+        if (log.timestamp && log.timestamp instanceof Date && !isNaN(log.timestamp.getTime())) {
+          if (log.timestamp.getTime() <= currentAbsoluteTime.getTime()) {
+            foundIndex = i;
+            break;
+          }
+        }
+      }
+      
+      // If no log is at or before, but video has started, maybe scroll to first if it's later?
+      // Or if all logs are before current time, scroll to last.
+      if (foundIndex === null && logs.length > 0 && logs[0].timestamp && logs[0].timestamp.getTime() > currentAbsoluteTime.getTime()) {
+        // Video time is before the first log with a timestamp
+        // setTargetLogIndexToScroll(0); // Option: scroll to first log
+        setTargetLogIndexToScroll(null); // Option: don't scroll yet
+      } else {
+        setTargetLogIndexToScroll(foundIndex);
+      }
+    };
+
+    videoElement.addEventListener('timeupdate', handleTimeUpdate);
+    onCleanup(() => {
+      videoElement.removeEventListener('timeupdate', handleTimeUpdate);
+    });
+  });
+
+
   return (
     <div style={{ padding: '20px' }}>
       <Show when={sessionData.loading}>
@@ -93,14 +165,14 @@ export default function SessionDetailPage(): JSX.Element {
             <div style={{ display: 'flex', 'flex-wrap': 'wrap', gap: '20px' }}>
               <div style={{ flex: '1 1 600px', 'min-width': '300px' }}>
                 <h2>Video</h2>
-                <video controls width="100%" src={data().video_url}>
+                <video ref={videoRef} controls width="100%" src={data().video_url}>
                   Your browser does not support the video tag.
                 </video>
               </div>
               <div style={{ flex: '1 1 400px', 'min-width': '300px' }}>
                 <h2>Unity Log</h2>
                 <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px', 'margin-bottom': '10px' }}>
-                  <div style={{ display: 'flex', 'align-items': 'center', gap: '10px' }}>
+                  <div style={{ display: 'flex', 'align-items': 'center', 'flex-wrap': 'wrap', gap: '10px' }}> {/* Added flex-wrap */}
                     <input
                       type="text"
                       placeholder="Filter logs..."
@@ -116,6 +188,14 @@ export default function SessionDetailPage(): JSX.Element {
                       />
                       Show Timestamps
                     </label>
+                    <label style={{ display: 'flex', 'align-items': 'center', gap: '5px', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={scrollWithVideo()}
+                        onChange={(e) => setScrollWithVideo(e.currentTarget.checked)}
+                      />
+                      Scroll With Video
+                    </label>
                   </div>
                 </div>
                 <SolidLogViewer
@@ -123,6 +203,7 @@ export default function SessionDetailPage(): JSX.Element {
                   isLoading={() => rawLogContent.loading}
                   containerHeight="500px"
                   showTimestamps={showTimestamps}
+                  targetLogIndex={targetLogIndexToScroll}
                 />
                  <Show when={!rawLogContent.loading && rawLogContent() === undefined && sessionData()?.log_url}>
                     <p>Log file specified but could not be loaded.</p>

@@ -17,6 +17,7 @@ interface LogViewerProps {
   defaultItemHeight?: number; // For virtualizer
   containerHeight?: string; // e.g., "600px"
   placeholder?: string; // Placeholder when logs are empty
+  targetLogIndex?: Accessor<number | undefined | null>; // For programmatic scrolling
 }
 
 export function SolidLogViewer(props: LogViewerProps) {
@@ -67,6 +68,20 @@ export function SolidLogViewer(props: LogViewerProps) {
     // After updating options, especially the count, we might need to tell the virtualizer to re-measure.
     if (parentRef && filteredLogs().length > 0) {
       rowVirtualizer.measure();
+    }
+  });
+
+  // Effect to scroll to a target index when props.targetLogIndex changes
+  createEffect(() => {
+    const targetIndex = props.targetLogIndex ? props.targetLogIndex() : null;
+    if (typeof targetIndex === 'number' && targetIndex >= 0 && targetIndex < filteredLogs().length) {
+      // Check if rowVirtualizer is initialized and has items
+      if (rowVirtualizer && rowVirtualizer.getVirtualItems().length > 0) {
+         // A short delay can sometimes help ensure the DOM is ready for scrolling, especially after data changes.
+        setTimeout(() => {
+          rowVirtualizer.scrollToIndex(targetIndex, { align: 'start', behavior: 'smooth' });
+        }, 0);
+      }
     }
   });
 
