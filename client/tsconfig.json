@@ -1,7 +1,7 @@
 {
   "compilerOptions": {
     "target": "ESNext",
-    "module": "ESNext",
+    "module": "Preserve",
     "moduleResolution": "bundler",
     "allowSyntheticDefaultImports": true,
     "esModuleInterop": true,
@@ -11,11 +11,5 @@
     "strict": true,
     "skipLibCheck": true,
     "lib": ["ESNext", "DOM", "DOM.Iterable"],
-    // "baseUrl": ".",
-    // "paths": {
-    //   "~/*": [
-    //     "./src/*"
-    //   ]
-    // }
   }
 }
