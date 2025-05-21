@@ -60,7 +60,7 @@ pub async fn get_session_info(State(app_state): State<AppState>, Path(session_id
 
     let metadata: Value = serde_json::from_reader(metadata_file)?;
     let video_url = format!("/data/{}/game_capture_0.mp4", session_id);
-    let log_url = format!("/data/{}/unity_log.txt", session_id);
+    let log_url = format!("/data/{}/data_unity_log.txt", session_id);
 
     Ok(Json(SessionData {
         metadata,

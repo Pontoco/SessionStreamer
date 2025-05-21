@@ -13,21 +13,16 @@ export default defineConfig({
   },
   server: {
     proxy: {
-      '/rest/list': {
+      '/rest': {
         target: 'http://localhost:3000',
         changeOrigin: true,
         secure: false,
       },
-      '/rest/session': {
+      '/data': {
         target: 'http://localhost:3000',
         changeOrigin: true,
         secure: false,
       },
-      '/rest/data': {
-        target: 'http://localhost:3000',
-        changeOrigin: true,
-        secure: false,
-      }
     }
   }
 })

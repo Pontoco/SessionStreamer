@@ -14,6 +14,7 @@ interface SessionData {
 }
 
 async function fetchSessionData(sessionId: string): Promise<SessionData | null> {
+  console.log(`Fetching session data for ${sessionId}`);
   try {
     const response = await fetch(`/rest/session/${sessionId}`);
     if (!response.ok) {
@@ -41,7 +42,7 @@ async function fetchLogContent(logUrl: string): Promise<string> {
 
 export default function SessionDetailPage(): JSX.Element {
   const params = useParams();
-  const [sessionData] = createResource(() => params.sessionId, fetchSessionData);
+  const [sessionData] = createResource(() => params.session_id, fetchSessionData);
   const [logContent] = createResource(() => sessionData()?.log_url, fetchLogContent);
 
   return (
