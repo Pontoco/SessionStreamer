@@ -115,7 +115,9 @@ async fn handle_generic_channel(
     // Drain all the messages to disk!
     let (_, mut messages) = channel.on_open().await;
 
-    let file_path = state.data_path.join(format!("data_{label}.dat"));
+    let ext = if protocol == "timestamped_bytes" { "txt" } else { "dat" };
+
+    let file_path = state.data_path.join(format!("data_{label}.{ext}"));
     let mut file_sink = match File::create(&file_path).await {
         Ok(file) => file,
         Err(err) => {
