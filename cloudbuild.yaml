@@ -3,22 +3,69 @@ steps:
     args:
       - build
       - '-t'
-      - 'gcr.io/$PROJECT_ID/session-streamer:$COMMIT_SHA'
+      - '$_IMAGE_NAME:$COMMIT_SHA'
       - .
+      - '-f'
+      - $_DOCKERFILE_NAME
+    dir: $_DOCKERFILE_DIR
+    id: Build
   - name: gcr.io/cloud-builders/docker
     args:
       - push
-      - 'gcr.io/$PROJECT_ID/session-streamer:$COMMIT_SHA'
-  - name: gcr.io/cloud-builders/gcloud
+      - '$_IMAGE_NAME:$COMMIT_SHA'
+    id: Push
+  - name: gcr.io/cloud-builders/gke-deploy
     args:
-      - run
-      - deploy
-      - session-streamer
-      - '--image'
-      - 'gcr.io/$PROJECT_ID/session-streamer:$COMMIT_SHA'
-      - '--region'
-      - us-central1
-      - '--platform'
-      - managed
+      - prepare
+      - '--filename=$_K8S_YAML_PATH'
+      - '--image=$_IMAGE_NAME:$COMMIT_SHA'
+      - '--app=$_K8S_APP_NAME'
+      - '--version=$COMMIT_SHA'
+      - '--namespace=$_K8S_NAMESPACE'
+      - '--label=$_K8S_LABELS'
+      - '--annotation=$_K8S_ANNOTATIONS,gcb-build-id=$BUILD_ID'
+      - '--create-application-cr'
+      - >-
+        --links="Build
+        details=https://console.cloud.google.com/cloud-build/builds/$BUILD_ID?project=$PROJECT_ID"
+      - '--output=output'
+    id: Prepare deploy
+  - name: gcr.io/cloud-builders/gsutil
+    args:
+      - '-c'
+      - |-
+        if [ "$_OUTPUT_BUCKET_PATH" != "" ]
+        then
+          gsutil cp -r output/suggested gs://$_OUTPUT_BUCKET_PATH/config/$_K8S_APP_NAME/$BUILD_ID/suggested
+          gsutil cp -r output/expanded gs://$_OUTPUT_BUCKET_PATH/config/$_K8S_APP_NAME/$BUILD_ID/expanded
+        fi
+    id: Save configs
+    entrypoint: sh
+  - name: gcr.io/cloud-builders/gke-deploy
+    args:
+      - apply
+      - '--filename=output/expanded'
+      - '--cluster=$_GKE_CLUSTER'
+      - '--location=$_GKE_LOCATION'
+      - '--namespace=$_K8S_NAMESPACE'
+    id: Apply deploy
 images:
-  - 'gcr.io/$PROJECT_ID/session-streamer:$COMMIT_SHA'
+  - '$_IMAGE_NAME:$COMMIT_SHA'
+options:
+  substitutionOption: ALLOW_LOOSE
+  logging: CLOUD_LOGGING_ONLY
+substitutions:
+  _K8S_NAMESPACE: default
+  _DOCKERFILE_NAME: Dockerfile
+  _K8S_ANNOTATIONS: gcb-trigger-id=c46d2b10-13c9-4166-9cd3-f6f154a44794
+  _K8S_APP_NAME: session-streamer
+  _DOCKERFILE_DIR: ''
+  _GKE_CLUSTER: autopilot-cluster-1
+  _IMAGE_NAME: gcr.io/sessionstreamer/github.com/pontoco/sessionstreamer
+  _OUTPUT_BUCKET_PATH: sessionstreamer_cloudbuild/deploy
+  _K8S_LABELS: ''
+  _K8S_YAML_PATH: kubernetes/
+  _GKE_LOCATION: us-central1
+tags:
+  - gcp-cloud-build-deploy
+  - $_K8S_APP_NAME
