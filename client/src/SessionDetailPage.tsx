@@ -158,33 +158,33 @@ export default function SessionDetailPage(): JSX.Element {
   });
 
   return (
-    <div style={{ padding: '20px' }}>
+    <div class="p-5">
       <Show when={sessionData.loading}>
         <p>Loading session details...</p>
       </Show>
       <Show when={!sessionData.loading && sessionData()}>
         {(data) => (
           <div>
-            <h1>Session: {data().metadata.session_id}</h1>
-            <div style={{ display: 'flex', 'flex-wrap': 'wrap', gap: '20px' }}>
-              <div style={{ flex: '1 1 600px', 'min-width': '300px' }}>
-                <h2>Video</h2>
+            <h1 class="text-2xl font-bold mb-4">Session: {data().metadata.session_id}</h1>
+            <div class="flex flex-wrap gap-5">
+              <div class="flex-1 basis-[600px] min-w-[300px]">
+                <h2 class="text-xl font-semibold mb-2">Video</h2>
                 <video ref={videoRef} controls width="100%" src={data().video_url}>
                   Your browser does not support the video tag.
                 </video>
               </div>
-              <div style={{ flex: '1 1 400px', 'min-width': '300px' }}>
-                <h2>Unity Log</h2>
-                <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px', 'margin-bottom': '10px' }}>
-                  <div style={{ display: 'flex', 'align-items': 'center', 'flex-wrap': 'wrap', gap: '10px' }}> {/* Added flex-wrap */}
+              <div class="flex-1 basis-[400px] min-w-[300px]">
+                <h2 class="text-xl font-semibold mb-2">Unity Log</h2>
+                <div class="flex flex-col gap-2.5 mb-2.5">
+                  <div class="flex items-center flex-wrap gap-2.5"> {/* Added flex-wrap */}
                     <input
                       type="text"
                       placeholder="Filter logs..."
                       value={filterText()}
                       onInput={(e) => setFilterText(e.currentTarget.value)}
-                      style={{ padding: '8px', 'border-radius': '4px', border: '1px solid #ccc', width: '300px' }}
+                      class="p-2 rounded border border-gray-300 w-[300px]"
                     />
-                    <label style={{ display: 'flex', 'align-items': 'center', gap: '5px', cursor: 'pointer' }}>
+                    <label class="flex items-center gap-[5px] cursor-pointer select-none">
                       <input
                         type="checkbox"
                         checked={showTimestamps()}
@@ -192,7 +192,7 @@ export default function SessionDetailPage(): JSX.Element {
                       />
                       Show Timestamps
                     </label>
-                    <label style={{ display: 'flex', 'align-items': 'center', gap: '5px', cursor: 'pointer' }}>
+                    <label class="flex items-center gap-[5px] cursor-pointer select-none">
                       <input
                         type="checkbox"
                         checked={scrollWithVideo()}
@@ -214,8 +214,8 @@ export default function SessionDetailPage(): JSX.Element {
                  </Show>
               </div>
             </div>
-            <h2 style={{ 'margin-top': '30px' }}>Metadata</h2>
-            <pre style={{ border: '1px solid #ccc', padding: '10px', 'background-color': '#f9f9f9' }}>
+            <h2 class="text-xl font-semibold mt-7 mb-2">Metadata</h2>
+            <pre class="border border-gray-300 p-2.5 bg-gray-50 rounded overflow-x-auto">
               {JSON.stringify(data().metadata, null, 2)}
             </pre>
           </div>

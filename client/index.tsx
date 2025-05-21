@@ -80,7 +80,7 @@ function SessionListPage(): JSX.Element {
     {
       accessorKey: 'session_id',
       header: 'Session ID',
-      cell: info => <A href={`/session/${info.getValue()}`}>{String(info.getValue())}</A>,
+      cell: info => <A class="text-blue-600 hover:text-blue-800 hover:underline" href={`/session/${info.getValue()}`}>{String(info.getValue())}</A>,
       enableSorting: true,
       enableColumnFilter: true,
     },
@@ -123,20 +123,20 @@ function SessionListPage(): JSX.Element {
   });
 
   return (
-    <div style={{ padding: '20px' }}>
-      <h1>Session List</h1>
+    <div class="p-5">
+      <h1 class="text-2xl font-bold mb-4">Session List</h1>
       <Show when={!sessions.loading} fallback={<p>Loading sessions...</p>}>
         <Show when={sessions() && sessions()!.length > 0} fallback={<p>No sessions found.</p>}>
-          <table style={{ width: '100%', 'border-collapse': 'collapse', border: '1px solid #ddd' }}>
+          <table class="w-full border-collapse border border-gray-300">
             <thead>
               <For each={table.getHeaderGroups()}>
                 {headerGroup => (
                   <tr>
                     <For each={headerGroup.headers}>
                       {header => (
-                        <th style={{ padding: '8px', border: '1px solid #ddd', 'background-color': '#f2f2f2', 'vertical-align': 'top' }}>
+                        <th class="p-2 border border-gray-300 bg-gray-100 align-top">
                           <div
-                            style={{ cursor: header.column.getCanSort() ? 'pointer' : 'default', 'user-select': 'none' }}
+                            class={header.column.getCanSort() ? 'cursor-pointer select-none' : 'select-none'}
                             onClick={header.column.getToggleSortingHandler()}
                           >
                             {flexRender(header.column.columnDef.header, header.getContext())}
@@ -146,13 +146,13 @@ function SessionListPage(): JSX.Element {
                             }[header.column.getIsSorted() as string] ?? ''}
                           </div>
                           {header.column.getCanFilter() ? (
-                            <div style={{ 'margin-top': '4px' }}>
+                            <div class="mt-1">
                               <input
                                 type="text"
                                 value={(header.column.getFilterValue() ?? '') as string}
                                 onInput={e => header.column.setFilterValue(e.currentTarget.value)}
                                 placeholder={`Filter...`}
-                                style={{ width: 'calc(100% - 10px)', padding: '2px 4px', 'box-sizing': 'border-box' }}
+                                class="w-[calc(100%-10px)] p-[2px_4px] box-border border border-gray-300 rounded-sm text-sm"
                                 onClick={e => e.stopPropagation()} // Prevent sort when clicking filter input
                               />
                             </div>
@@ -170,7 +170,7 @@ function SessionListPage(): JSX.Element {
                   <tr>
                     <For each={row.getVisibleCells()}>
                       {cell => (
-                        <td style={{ padding: '8px', border: '1px solid #ddd' }}>
+                        <td class="p-2 border border-gray-300">
                           {flexRender(cell.column.columnDef.cell, cell.getContext())}
                         </td>
                       )}
