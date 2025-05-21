@@ -88,6 +88,7 @@ export default function SessionDetailPage(): JSX.Element {
   createEffect(() => {
     const sData = sessionData();
     const videoElement = videoRef;
+    console.log("Video Element:", videoElement);
 
     if (!videoElement || !sData || !sData.metadata.timestamp || !scrollWithVideo()) {
       // If not scrolling with video, or necessary data/refs are missing, do nothing.
@@ -152,6 +153,9 @@ export default function SessionDetailPage(): JSX.Element {
     });
   });
 
+  createEffect(() => {
+    console.log("url::"+ sessionData()?.video_url);
+  });
 
   return (
     <div style={{ padding: '20px' }}>
