@@ -1,5 +1,7 @@
 mod webrtc_utils;
 mod rest;
+mod timestamped_bytes;
+mod data_channels;
 
 use anyhow::{Result, anyhow};
 use axum::extract::{Query, State};
@@ -12,7 +14,7 @@ use futures::{StreamExt, TryFutureExt};
 use gstreamer::{ClockTime, MessageType, prelude::*};
 use serde::{Deserialize, Serialize};
 use tower_http::services::ServeDir;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::panic::Location;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -129,6 +131,21 @@ pub fn create_server(data_path: impl Into<PathBuf>) -> Result<axum::Router> {
         .with_state(state))
 }
 
+impl SessionState {
+    /// Sends a message to the client.
+    /// If the send fails, logs an error.
+    pub async fn send_client_or_log_error<M: Into<String>>(&self, msg: M) {
+        let msg = msg.into();
+        if let Err(err) = self
+            .client_send_tx
+            .send(ServerMessage::Error { message: msg.clone() })
+            .await
+        {
+            error!("Failed to send message to client: [{}] [{}]", msg, err);
+        }
+    }
+}
+
 #[axum::debug_handler]
 async fn whip_post_handler(
     State(state): State<AppState>,
@@ -237,7 +254,7 @@ async fn whip_post_handler(
                 let request_graceful_shutdown = graceful_shutdown.clone();
                 let task = tokio::spawn(
                     async move {
-                        let result = handle_data_channel(state.clone(), channel, request_graceful_shutdown);
+                        let result = data_channels::handle_data_channel(state.clone(), channel, request_graceful_shutdown);
 
                         if let Err(err) = result.await {
                             error!("{}", err);
@@ -396,137 +413,6 @@ async fn whip_post_handler(
         .body(local_description.sdp)?)
 }
 
-async fn handle_data_channel(
-    state: SessionState,
-    mut channel: StatefulDataChannel,
-    graceful_shutdown: CancellationToken,
-) -> Result<(), LineTrackingError> {
-    info!(ready_state=?channel.ready_state(), "Data channel connected: {}", &channel.label());
-
-    let label = channel.label().to_string();
-    let errors = channel.errors();
-
-    // Log any errors the data channel encounters.
-    let err_label = label.clone();
-    tokio::spawn(
-        async move {
-            errors
-                .filter_map(async |val| val.map_err(|err| error!("{}", err)).ok())
-                .for_each(move |error| {
-                    let err_label = err_label.clone();
-                    async move {
-                        error!("Data channel [{}] had error: {}", &err_label, error);
-                    }
-                })
-                .instrument(Span::current())
-        }
-        .instrument(Span::current()),
-    );
-
-    // Wait for the 'general' data channel to connect and receive messages on the other end of the above channel.
-    match label.as_ref() {
-        // The 'general' data channel is used for signaling between the client / server.
-        // Note: general stays open during graceful shutdown!
-        "general" => {
-            info!("got general");
-            let (opened, mut messages) = channel.on_open().await;
-            info!("opened general");
-
-            // spawn a new task and send stuff
-            // Our primary 'send stuff to the client' channel.
-            tokio::spawn(
-                async move {
-                    // Take the receiving end of the client send.
-                    if let Some(mut rx) = state.client_send_rx.lock().await.take() {
-                        while let Some(data) = rx.recv().await {
-                            match serde_json::to_string(&data) {
-                                Ok(json) => match opened.send_text(json).await {
-                                    Ok(_) => info!("Sent message to client [{:?}]", &data),
-                                    Err(err) => match err {
-                                        webrtc::Error::ErrClosedPipe => {
-                                            trace!("Datachannel closed. Stopping sending messages to client.");
-                                        }
-                                        _ => error!("Error sending message to client [{}]", err),
-                                    },
-                                },
-                                Err(err) => {
-                                    error!("Failed to serialize data message. {} {:?}", err, data)
-                                }
-                            }
-                        }
-                    } else {
-                        error!("Data channel already initialized [{}]", label);
-                    }
-
-                    info!("Closed client sending channel.");
-                }
-                .instrument(Span::current()),
-            );
-
-            // Handle messages from the client.
-            while let Some(msg) = graceful_shutdown.run_until_cancelled(messages.next()).await.flatten() {
-                match serde_json::from_slice::<ClientMessage>(&msg.data) {
-                    Err(e) => {
-                        error!("Client did not send valid ClientMessage JSON. [{}]", e)
-                    }
-                    Ok(msg) => match msg {
-                        ClientMessage::SessionEnding => {
-                            info!("Client requested polite closing of session.");
-                            graceful_shutdown.cancel();
-                        }
-                        ClientMessage::Info { message } => info!("Received message from client: [{message}]"),
-                        ClientMessage::Error { message } => error!("Received error from client: [{message}]"),
-                    },
-                };
-            }
-        }
-        // Other data channels are dumped directly to disk by id.
-        _ => {
-            // Drain all the messages to disk!
-            let (_, mut messages) = channel.on_open().await;
-
-            let file_path = state.data_path.join(format!("data_{label}.dat"));
-            let mut file_sink = match File::create(&file_path).await {
-                Ok(file) => file,
-                Err(err) => {
-                    return Err(anyhow!("Couldn't create file writer for data channel: [{}] [{}]", label, err).into());
-                }
-            };
-
-            info!("Created data channel file: [{:?}]", file_path);
-
-            let mut msg_count = 0;
-            while let Some(msg) = graceful_shutdown.run_until_cancelled(messages.next()).await.flatten() {
-                trace!(size = msg.data.len(), msg.is_string, "Data channel [{}] received packet.", label);
-
-                // Some simple stats logging.
-                msg_count += 1;
-                if msg_count % 100 == 0 {
-                    info!("Data channel [{}] has received {} packets total..", label, msg_count);
-                }
-
-                if msg.is_string {
-                    // state.send_client_or_log_error(format!("Received text encoded data channel packet. \
-                    //     Not supported. First byte should be timestamp. [{}]", channel_label)).await;
-                }
-
-                // Unpack the byte buffer.
-                //  - timestamp - 8 bytes - little endian - nanoseconds since unix epoch
-                //  - payload - remainder - raw data to be written to disk.
-
-                // Each time we hit the first character after a newline, emit new timestamp.
-                // Buuut we can't do that if the UTF8 is partial! damnation.
-
-                // Write data channel raw bytes to the file.
-                if let Err(err) = file_sink.write_all(&msg.data).await {
-                    error!("Failed to write datachannel buffer to disk: [{}] [{err}]", label);
-                }
-            }
-        }
-    }
-
-    Ok(())
-}
 
 /// Handles video tracks that the client sends to us.
 async fn handle_track(

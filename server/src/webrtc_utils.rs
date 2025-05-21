@@ -185,6 +185,10 @@ impl DataChannelMut {
         self.channel.ready_state()
     }
 
+    pub fn protocol(&self) -> &str {
+        self.channel.protocol()
+    }
+
     pub async fn close(self) -> Result<(), webrtc::Error> {
         self.channel.close().await
     }
@@ -194,7 +198,6 @@ impl StatefulDataChannel {
     pub fn new(data_channel: Arc<RTCDataChannel>) -> StatefulDataChannel {
         let (tx_open, rx_open) = tokio::sync::oneshot::channel();
 
-        info!("Register onopen");
         let span = Span::current().clone();
         data_channel.on_open(Box::new(move || {
             let _span = span.entered();
