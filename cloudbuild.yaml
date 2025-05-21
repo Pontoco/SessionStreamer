@@ -1,11 +1,3 @@
-dependencies:
-  - gitSource:
-      repository:
-        developerConnect: 'projects/sessionstreamer/locations/us-central1/connections/github/gitRepositoryLinks/session'
-      revision: deploy
-      recurseSubmodules: true
-      depth: 1
-      destPath: .
 steps:
   - name: gcr.io/cloud-builders/docker
     args:
