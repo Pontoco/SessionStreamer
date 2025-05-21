@@ -45,14 +45,40 @@ export default function SessionDetailPage(): JSX.Element {
   const params = useParams();
   const [sessionData] = createResource(() => params.session_id, fetchSessionData);
   const [rawLogContent] = createResource(() => sessionData()?.log_url, fetchLogContent);
+  const [showTimestamps, setShowTimestamps] = createSignal(false);
+  const [filterText, setFilterText] = createSignal('');
 
-  const parsedLogs = createMemo((): LogEntry[] => {
+  const logLineRegex = /^(\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+[+-]\d{2}:\d{2})\s*(.*)$/;
+
+  const processedLogs = createMemo((): LogEntry[] => {
     const content = rawLogContent();
     if (!content) return [];
-    return content.split('\n').map((line, index) => ({
-      id: index,
-      message: line,
-    }));
+
+    const lines = content.split('\n');
+    const allLogs: LogEntry[] = [];
+
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      const match = line.match(logLineRegex);
+      if (match) {
+        allLogs.push({
+          id: i,
+          timestamp: new Date(match[1]),
+          message: match[2] || '', // Ensure message is not undefined
+        });
+      } else {
+        allLogs.push({
+          id: i,
+          message: line,
+        });
+      }
+    }
+
+    const term = filterText().toLowerCase();
+    if (!term) {
+      return allLogs;
+    }
+    return allLogs.filter(log => log.message.toLowerCase().includes(term));
   });
 
   return (
@@ -73,10 +99,30 @@ export default function SessionDetailPage(): JSX.Element {
               </div>
               <div style={{ flex: '1 1 400px', 'min-width': '300px' }}>
                 <h2>Unity Log</h2>
+                <div style={{ display: 'flex', 'flex-direction': 'column', gap: '10px', 'margin-bottom': '10px' }}>
+                  <div style={{ display: 'flex', 'align-items': 'center', gap: '10px' }}>
+                    <input
+                      type="text"
+                      placeholder="Filter logs..."
+                      value={filterText()}
+                      onInput={(e) => setFilterText(e.currentTarget.value)}
+                      style={{ padding: '8px', 'border-radius': '4px', border: '1px solid #ccc', width: '300px' }}
+                    />
+                    <label style={{ display: 'flex', 'align-items': 'center', gap: '5px', cursor: 'pointer' }}>
+                      <input
+                        type="checkbox"
+                        checked={showTimestamps()}
+                        onChange={(e) => setShowTimestamps(e.currentTarget.checked)}
+                      />
+                      Show Timestamps
+                    </label>
+                  </div>
+                </div>
                 <SolidLogViewer
-                  logs={parsedLogs}
+                  logs={processedLogs}
                   isLoading={() => rawLogContent.loading}
                   containerHeight="500px"
+                  showTimestamps={showTimestamps}
                 />
                  <Show when={!rawLogContent.loading && rawLogContent() === undefined && sessionData()?.log_url}>
                     <p>Log file specified but could not be loaded.</p>

@@ -52,6 +52,7 @@
 .timestamp {
   margin-right: 10px;
   color: #888;
+  text-wrap: nowrap;
 }
 
 .message {
