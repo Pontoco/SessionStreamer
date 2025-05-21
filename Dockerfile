@@ -30,12 +30,12 @@ COPY --from=planner /usr/src/app/server/recipe.json recipe.json
 # Vendor is part of our dependencies
 COPY ./vendor ../vendor
 
+# Install client tools
+RUN curl -fsSL https://deno.land/install.sh | sh
+RUN /root/.deno/bin/deno install -g npm:vite
+
 # Build dependencies - this is the caching Docker layer!
 RUN cargo chef cook --release --recipe-path recipe.json
-
-# Install client tools
-RUN apt-get install -y deno
-RUN deno install -g npm:vite
 
 # Build the server binary.
 COPY ./server .
@@ -44,7 +44,8 @@ RUN cargo build --release --bin main
 # Build the client distribution.
 WORKDIR /usr/src/app/client
 COPY ./client .
-RUN deno run build
+RUN /root/.deno/bin/deno install
+RUN /root/.deno/bin/deno run build
 
 # ---- Runner Stage ----
 FROM --platform=linux/amd64 debian:bookworm-slim

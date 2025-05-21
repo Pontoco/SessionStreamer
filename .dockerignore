@@ -1,4 +1,6 @@
 ./server/target
 ./server/data
+./client/node_modules
+./client/dist
 .cargo
 .idea
