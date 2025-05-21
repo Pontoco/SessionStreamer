@@ -1,7 +1,7 @@
 dependencies:
   - gitSource:
       repository:
-        developerConnect: 'projects/sessionstreamer/locations/us-west1/connections/github/gitRepositoryLinks/sessionstreamer'
+        developerConnect: 'projects/sessionstreamer/locations/us-central1/connections/github/gitRepositoryLinks/session'
       revision: deploy
       recurseSubmodules: true
       depth: 1
