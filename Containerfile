@@ -33,9 +33,18 @@ COPY ./vendor ../vendor
 # Build dependencies - this is the caching Docker layer!
 RUN cargo chef cook --release --recipe-path recipe.json
 
+# Install client tools
+RUN apt-get install -y deno
+RUN deno install -g npm:vite
+
 # Build the server binary.
 COPY ./server .
 RUN cargo build --release --bin main
+
+# Build the client distribution.
+WORKDIR /usr/src/app/client
+COPY ./client .
+RUN deno run build
 
 # ---- Runner Stage ----
 FROM --platform=linux/amd64 debian:bookworm-slim
@@ -65,6 +74,7 @@ WORKDIR /usr/src/app
 # Copy the compiled binary from the builder stage
 # Adjust 'server' if your binary name is different
 COPY --from=builder /usr/src/app/server/target/release/main .
+COPY --from=builder /usr/src/app/client/dist ./client_dist
 
 # Expose the port. 
 EXPOSE 3000
@@ -72,4 +82,4 @@ EXPOSE 3000
 # Use a more detailed logging for the server by default.
 ENV RUST_LOG "info,gstreamer=warn,server=debug"
 
-ENTRYPOINT ["/usr/src/app/main", "--use-structured-logging"]
+ENTRYPOINT ["/usr/src/app/main", "--use-structured-logging", "--client-files=./client_dist"]

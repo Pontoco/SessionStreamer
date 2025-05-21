@@ -7,7 +7,7 @@ use anyhow::{Result, anyhow};
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
-use axum::routing::{get, post};
+use axum::routing::{get, get_service, post};
 use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
 use futures::{StreamExt, TryFutureExt};
@@ -97,7 +97,7 @@ where
     }
 }
 
-pub fn create_server(data_path: impl Into<PathBuf>) -> Result<axum::Router> {
+pub fn create_server(data_path: impl Into<PathBuf>, client_files: impl Into<PathBuf>) -> Result<axum::Router> {
     let mut m = MediaEngine::default();
 
     // We use a default media engine, but we only support H264 codecs.
@@ -119,10 +119,14 @@ pub fn create_server(data_path: impl Into<PathBuf>) -> Result<axum::Router> {
         data_path: data_path.clone(),
     };
 
+    let client_path = client_files.into();
+    info!("Serving client on route: [{}]", &client_path.display());
+
     Ok(axum::Router::new()
-        .nest_service("/data", ServeDir::new(data_path))
-        .route("/whip", post(whip_post_handler))
-        .nest("/rest", rest::routes())
+        .nest_service("/data", ServeDir::new(data_path)) // Serve the static data from the sessions.
+        .route("/whip", post(whip_post_handler)) // Serve the WHIP Api
+        .nest("/rest", rest::routes()) // Serve the REST Api
+        .fallback(get_service(ServeDir::new(client_path))) // Serve the client assets by default.
         .layer(
             trace::TraceLayer::new_for_http()
                 .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))

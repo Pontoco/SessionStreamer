@@ -11,7 +11,10 @@ struct CommandLineArgs {
     #[arg(long, default_value = "./data/")]
     pub data_path: PathBuf,
     #[arg(long)]
-    pub use_structured_logging: bool
+    pub use_structured_logging: bool,
+    
+    #[arg(long, default_value = "../client/dist")]
+    pub client_files: PathBuf
 }
 
 #[tokio::main]
@@ -30,8 +33,7 @@ async fn main() -> Result<()> {
     }
 
     // Call the library function to get the router
-    let app = server::create_server(args.data_path)?; // Potentially pass args here: create_server(args)?
-
+    let app = server::create_server(args.data_path, args.client_files)?; // Potentially pass args here: create_server(args)?
 
     let listener = TcpListener::bind("0.0.0.0:3000").await?;
     info!("Listening on {}", listener.local_addr()?);
