@@ -1,0 +1,75 @@
+.solid-log-viewer-wrapper {
+  border: 1px solid #ccc;
+  border-radius: 4px;
+}
+
+.search-bar {
+  display: flex;
+  padding: 8px;
+  border-bottom: 1px solid #eee;
+}
+
+.search-bar input {
+  flex-grow: 1;
+  padding: 6px;
+  border: 1px solid #ddd;
+  border-radius: 3px;
+}
+
+.search-bar button {
+  margin-left: 8px;
+  padding: 6px 10px;
+  border: 1px solid #ddd;
+  background-color: #f0f0f0;
+  cursor: pointer;
+  border-radius: 3px;
+}
+
+.search-bar button:hover {
+  background-color: #e0e0e0;
+}
+
+.log-container {
+  position: relative; /* Needed for virtualizer positioning */
+  font-family: monospace;
+  font-size: 14px;
+  /* height and overflow are dynamic, set by props/inline */
+}
+
+.log-item {
+  padding: 0 8px; /* Small padding for each item */
+  box-sizing: border-box;
+  display: flex;
+  align-items: flex-start;
+  /* Positional styles (position, top, left, width, transform) are dynamic and inline */
+  /* Height is determined by content and virtualizer measurement */
+}
+
+.log-item:hover {
+  background-color: #f9f9f9;
+}
+
+.timestamp {
+  margin-right: 10px;
+  color: #888;
+}
+
+.message {
+  flex-grow: 1;
+  text-wrap: nowrap;
+}
+
+.placeholder, 
+.loading-indicator {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  height: 100%; /* Ensure placeholder/loader takes full container height if container has fixed height */
+  color: #777;
+  font-family: sans-serif;
+}
+
+/* Ensure loading indicator also uses containerHeight if provided for consistency */
+.loading-indicator {
+  /* display, align-items, justify-content are already covered */
+}

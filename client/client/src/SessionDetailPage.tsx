@@ -1,6 +1,7 @@
 import { useParams } from '@solidjs/router';
-import { createResource, Show, onMount, createSignal } from 'solid-js';
+import { createResource, Show, createSignal, createMemo } from 'solid-js';
 import type { JSX } from 'solid-js';
+import { SolidLogViewer, type LogEntry } from '../components/SolidLogViewer';
 
 interface SessionMetadata {
   session_id: string;
@@ -43,7 +44,16 @@ async function fetchLogContent(logUrl: string): Promise<string> {
 export default function SessionDetailPage(): JSX.Element {
   const params = useParams();
   const [sessionData] = createResource(() => params.session_id, fetchSessionData);
-  const [logContent] = createResource(() => sessionData()?.log_url, fetchLogContent);
+  const [rawLogContent] = createResource(() => sessionData()?.log_url, fetchLogContent);
+
+  const parsedLogs = createMemo((): LogEntry[] => {
+    const content = rawLogContent();
+    if (!content) return [];
+    return content.split('\n').map((line, index) => ({
+      id: index,
+      message: line,
+    }));
+  });
 
   return (
     <div style={{ padding: '20px' }}>
@@ -63,24 +73,12 @@ export default function SessionDetailPage(): JSX.Element {
               </div>
               <div style={{ flex: '1 1 400px', 'min-width': '300px' }}>
                 <h2>Unity Log</h2>
-                <Show when={logContent.loading}>
-                  <p>Loading log...</p>
-                </Show>
-                <Show when={!logContent.loading && logContent() !== undefined}>
-                  <pre
-                    style={{
-                      'max-height': '500px',
-                      overflow: 'auto',
-                      border: '1px solid #ccc',
-                      padding: '10px',
-                      'white-space': 'pre-wrap', // Ensure lines wrap
-                      'word-break': 'break-all', // Ensure long unbroken strings wrap
-                    }}
-                  >
-                    {logContent()}
-                  </pre>
-                </Show>
-                 <Show when={!logContent.loading && logContent() === undefined && sessionData()?.log_url}>
+                <SolidLogViewer
+                  logs={parsedLogs}
+                  isLoading={() => rawLogContent.loading}
+                  containerHeight="500px"
+                />
+                 <Show when={!rawLogContent.loading && rawLogContent() === undefined && sessionData()?.log_url}>
                     <p>Log file specified but could not be loaded.</p>
                  </Show>
               </div>

@@ -384,7 +384,7 @@ async fn whip_post_handler(
             if graceful_shutdown_src.is_cancelled() {
                 info!("Sending SessionComplete message.");
                 if let Err(err) = session_state.client_send_tx.send(ServerMessage::SessionComplete).await {
-                    error!("Failed to send SessionComplete on general channel while closing. [{}]", err);
+                    info!("Failed to send SessionComplete on general channel while closing. Ok. [{}]", err);
                 }
             }
 
