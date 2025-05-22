@@ -1,18 +1,11 @@
-import { defineConfig } from 'vite'
-import solid from 'vite-plugin-solid'
-import tailwindcss from '@tailwindcss/vite'
+import tailwindcss from '@tailwindcss/vite';
+import { defineConfig } from 'vite';
+import solidPlugin from 'vite-plugin-solid';
 
 export default defineConfig({
-  plugins: [solid(), tailwindcss()],
-  optimizeDeps: {
-    include: ['solid-js/web'],
-  },
-  resolve: {
-    alias: {
-      'solid-js/dom': 'solid-js/web',
-    },
-  },
+  plugins: [solidPlugin(), tailwindcss()],
   server: {
+    port: 8080,
     proxy: {
       '/rest': {
         target: 'http://localhost:3000',
@@ -41,5 +34,8 @@ export default defineConfig({
         }
       },
     }
-  }
-})
+  },
+  build: {
+    target: 'esnext',
+  },
+});
