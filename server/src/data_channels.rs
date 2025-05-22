@@ -61,17 +61,17 @@ async fn handle_general_channel(
             // Take the receiving end of the client send.
             if let Some(mut rx) = state.client_send_rx.lock().await.take() {
                 while let Some(data) = rx.recv().await {
+                    debug!("Sending message to client [{:?}]", &data);
                     match serde_json::to_string(&data) {
                         Ok(json) => match opened.send_text(json).await {
                             Ok(_) => {
-                                debug!("Sent message to client [{:?}]", &data);
                                 if let Err(err) = state.messages_sink.send(format!("ToClient: {:?}", &data)) {
                                     error!("Failed to send to message log: {:?} {err}", &data);
                                 }
                             }
                             Err(err) => match err {
                                 webrtc::Error::ErrClosedPipe => {
-                                    trace!("Datachannel closed. Stopping sending messages to client.");
+                                    debug!("Datachannel closed. Skipping sending messages to client.");
                                 }
                                 _ => error!("Error sending message to client [{}]", err),
                             },
