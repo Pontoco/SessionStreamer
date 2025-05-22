@@ -165,7 +165,7 @@ export default function SessionDetailPage(): JSX.Element {
       <Show when={!sessionData.loading && sessionData()}>
         {(data) => (
           <div>
-            <h1 class="text-2xl font-bold mb-4">Session: {data().metadata.session_id}</h1>
+            <h1 class="text-2xl bg-brand-500 font-bold mb-4">Session: {data().metadata.session_id}</h1>
             <div class="flex flex-wrap gap-5">
               <div class="flex-1 basis-[600px] min-w-[300px]">
                 <h2 class="text-xl font-semibold mb-2">Video</h2>

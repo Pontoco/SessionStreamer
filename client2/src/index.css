@@ -3,5 +3,5 @@
 @config "../tailwind.config.js";
 
 @theme {
-  --color-mint-500: oklch(0.72 0.11 178);
+    /* new v4 theme stuff goes here */
 }
