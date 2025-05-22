@@ -15,15 +15,14 @@ use futures::{StreamExt, TryFutureExt};
 use serde::{Deserialize, Serialize};
 use video_track::{determine_supported_video_tracks, handle_track};
 use webrtc::sdp::{MediaDescription, SessionDescription};
-use std::collections::{HashMap, VecDeque};
+use std::collections::{HashMap};
 use std::panic::Location;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI8;
 use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
-use tokio::fs::{self, File};
-use tokio::io::AsyncWriteExt;
+use tokio::fs::{self};
 use tokio::sync::Mutex;
 use tokio::sync::mpsc::{Receiver, Sender};
 use tokio::time::sleep;
@@ -45,7 +44,7 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp_transceiver::RTCPFeedback;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
-use webrtc_utils::{StatefulDataChannel, StatefulPeerConnection, StatefulTrack};
+use webrtc_utils::{StatefulPeerConnection};
 
 #[derive(Clone)]
 struct AppState {

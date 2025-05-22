@@ -3,17 +3,13 @@ use futures::StreamExt;
 use gstreamer::{ClockTime, MessageType, prelude::*};
 use sdp::description::media::MediaDescription;
 use sdp::description::session::SessionDescription;
-use sdp::description::session::{ATTR_KEY_MID, ATTR_KEY_MSID, ATTR_KEY_RID, ATTR_KEY_SIMULCAST, ATTR_KEY_SSRC};
-use std::collections::HashSet;
-use std::io::Cursor;
 use tokio_util::sync::CancellationToken;
 use tracing::{debug, error, info, trace};
 use webrtc::api::media_engine;
 use webrtc::rtp::codecs::h264::H264Packet;
 use webrtc::rtp::packetizer::Depacketizer;
 use webrtc::rtp_transceiver::rtp_transceiver_direction::RTCRtpTransceiverDirection;
-use webrtc::sdp::description::session;
-use webrtc::{media, sdp};
+use webrtc::{sdp};
 
 use crate::webrtc_utils::StatefulTrack;
 use crate::{LineTrackingError, ServerMessage, SessionState}; // sdp::direction::Direction in older versions, sdp::extmap::Direction in newer
