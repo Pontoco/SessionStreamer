@@ -1,8 +1,8 @@
+use anyhow::anyhow;
 use futures::StreamExt;
 use tokio::{fs::File, io::AsyncWriteExt};
 use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Span, debug, error, info, trace};
-use anyhow::anyhow;
 
 use crate::{
     ClientMessage, LineTrackingError, SessionState, timestamped_bytes::TimestampedUtf8Depacketizer, webrtc_utils::StatefulDataChannel,
@@ -55,6 +55,7 @@ async fn handle_general_channel(
 
     // spawn a new task and send stuff
     // Our primary 'send stuff to the client' channel.
+    let state2 = state.clone();
     tokio::spawn(
         async move {
             // Take the receiving end of the client send.
@@ -62,7 +63,12 @@ async fn handle_general_channel(
                 while let Some(data) = rx.recv().await {
                     match serde_json::to_string(&data) {
                         Ok(json) => match opened.send_text(json).await {
-                            Ok(_) => info!("Sent message to client [{:?}]", &data),
+                            Ok(_) => {
+                                debug!("Sent message to client [{:?}]", &data);
+                                if let Err(err) = state.messages_sink.send(format!("ToClient: {:?}", &data)) {
+                                    error!("Failed to send to message log: {:?} {err}", &data);
+                                }
+                            }
                             Err(err) => match err {
                                 webrtc::Error::ErrClosedPipe => {
                                     trace!("Datachannel closed. Stopping sending messages to client.");
@@ -90,14 +96,19 @@ async fn handle_general_channel(
             Err(e) => {
                 error!("Client did not send valid ClientMessage JSON. [{}]", e)
             }
-            Ok(msg) => match msg {
-                ClientMessage::SessionEnding => {
-                    info!("Client requested polite closing of session.");
-                    graceful_shutdown.cancel();
+            Ok(msg) => {
+                if let Err(err) = state2.messages_sink.send(format!("ToServer: {:?}", &msg)) {
+                    error!("Failed to send to message log: {:?} {err}", &msg);
                 }
-                ClientMessage::Info { message } => info!("Received message from client: [{message}]"),
-                ClientMessage::Error { message } => error!("Received error from client: [{message}]"),
-            },
+                match msg {
+                    ClientMessage::SessionEnding => {
+                        info!("Client requested polite closing of session.");
+                        graceful_shutdown.cancel();
+                    }
+                    ClientMessage::Info { message } => info!("Received message from client: [{message}]"),
+                    ClientMessage::Error { message } => error!("Received error from client: [{message}]"),
+                }
+            }
         };
     }
 
@@ -141,9 +152,11 @@ async fn handle_generic_channel(
 
         if protocol == "timestamped_bytes" {
             if msg.is_string {
-                state.send_client_info(format!(
-                    "data channel with protocol [{protocol}] cannot send messages of type string."
-                )).await;
+                state
+                    .send_client_info(format!(
+                        "data channel with protocol [{protocol}] cannot send messages of type string."
+                    ))
+                    .await;
                 return Err(anyhow::anyhow!("Invalid protocol.").into());
             }
 

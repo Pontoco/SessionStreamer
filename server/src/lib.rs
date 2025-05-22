@@ -13,18 +13,17 @@ use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
 use futures::{StreamExt, TryFutureExt};
 use serde::{Deserialize, Serialize};
-use video_track::{determine_supported_video_tracks, handle_track};
-use webrtc::sdp::{MediaDescription, SessionDescription};
-use std::collections::{HashMap};
+use std::collections::HashMap;
 use std::panic::Location;
 use std::path::PathBuf;
 use std::sync::Arc;
 use std::sync::atomic::AtomicI8;
 use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
-use tokio::fs::{self};
-use tokio::sync::Mutex;
-use tokio::sync::mpsc::{Receiver, Sender};
+use tokio::fs::{self, File};
+use tokio::io::AsyncWriteExt;
+use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
+use tokio::sync::{Mutex, mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
@@ -35,6 +34,7 @@ use tracing::{trace, warn};
 use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{EnvFilter, Layer};
+use video_track::{determine_supported_video_tracks, handle_track};
 use webrtc::api::media_engine::MediaEngine;
 use webrtc::api::{APIBuilder, interceptor_registry, media_engine};
 use webrtc::ice_transport::ice_server::RTCIceServer;
@@ -44,7 +44,8 @@ use webrtc::peer_connection::peer_connection_state::RTCPeerConnectionState;
 use webrtc::peer_connection::sdp::session_description::RTCSessionDescription;
 use webrtc::rtp_transceiver::RTCPFeedback;
 use webrtc::rtp_transceiver::rtp_codec::{RTCRtpCodecCapability, RTCRtpCodecParameters, RTPCodecType};
-use webrtc_utils::{StatefulPeerConnection};
+use webrtc::sdp::{MediaDescription, SessionDescription};
+use webrtc_utils::StatefulPeerConnection;
 
 #[derive(Clone)]
 struct AppState {
@@ -56,13 +57,14 @@ struct AppState {
 
 #[derive(Clone)]
 struct SessionState {
-    pub app_state: AppState,                   // Global state associated with the runtime.
-    pub session_id: String,                    // GUID identifier for this session.
-    pub data_path: PathBuf,                    // The path where data for this session is stored.
-    pub client_send_tx: Sender<ServerMessage>, // Sends messages to the client via our data channel.
-    pub track_id: Arc<AtomicI8>,               // Incrementing track id for each connected video track.
+    pub app_state: AppState, // Global state associated with the runtime.
+    pub session_id: String,  // GUID identifier for this session.
+    pub data_path: PathBuf,  // The path where data for this session is stored.
     pub client_send_rx: Arc<Mutex<Option<Receiver<ServerMessage>>>>,
-    pub offered_video_tracks: Vec<MediaDescription> // The set of media tracks the client sent in its offer. We expect to see each of them connect.
+    pub client_send_tx: Sender<ServerMessage>, // Sends messages to the client via our data channel.
+    pub messages_sink: UnboundedSender<String>, // Used to write Client and Server messages to disk as a text file.
+    pub track_id: Arc<AtomicI8>,               // Incrementing track id for each connected video track.
+    pub offered_video_tracks: Vec<MediaDescription>, // The set of media tracks the client sent in its offer. We expect to see each of them connect.
 }
 
 /// Sent from the server to control or inform the client.
@@ -71,28 +73,22 @@ struct SessionState {
 #[derive(Serialize, Deserialize, Debug, Clone, PartialEq, Eq)]
 #[serde(tag = "kind")]
 pub enum ServerMessage {
-    Info { message: String }, // Info is casual, non-chatty information. 
+    Info { message: String },   // Info is casual, non-chatty information.
     Notice { message: String }, // A notice is a recovered error. It's a failure that is stronger than a warning, but non-fatal.
-    Error { message: String }, // An error is fatal and should be displayed to the client. It implies something has really gone wrong.
-    SessionComplete, // Sent to the client after it requests a graceful shutdown of the session.
+    Error { message: String },  // An error is fatal and should be displayed to the client. It implies something has really gone wrong.
+    SessionComplete,            // Sent to the client after it requests a graceful shutdown of the session.
 }
 
 impl ServerMessage {
     pub fn info<M: Into<String>>(message: M) -> Self {
-        ServerMessage::Info {
-            message: message.into(),
-        }
+        ServerMessage::Info { message: message.into() }
     }
 
     pub fn notice<M: Into<String>>(message: M) -> Self {
-        ServerMessage::Notice {
-            message: message.into(),
-        }
+        ServerMessage::Notice { message: message.into() }
     }
     pub fn error<M: Into<String>>(message: M) -> Self {
-        ServerMessage::Error {
-            message: message.into(),
-        }
+        ServerMessage::Error { message: message.into() }
     }
 }
 
@@ -206,25 +202,46 @@ async fn whip_post_handler(
     }
     fs::create_dir(&data_path).await?;
 
-
     info!("Created new game streaming session: {}", &session_id);
 
     // todo! It's important that this gets cancelled on drop.
     // Right now we have a memory leak if we hit an error, because the spawned tasks will not be killed.
     let graceful_shutdown_src = CancellationToken::new();
 
+    let (messages_sink, mut messages_sink_rx) = mpsc::unbounded_channel::<String>();
+
     let mut session_state = SessionState {
         client_send_tx: client_send.clone(),
         client_send_rx: Arc::new(Mutex::new(Some(client_send_rx))),
+        messages_sink: messages_sink,
         app_state: state.clone(),
         track_id: Arc::new(AtomicI8::new(0)),
         data_path: data_path,
         session_id: session_id.clone(),
-        offered_video_tracks: vec!()
+        offered_video_tracks: vec![],
     };
 
     // Dump the metadata in the data path.
     fs::write(session_state.data_path.join("metadata.json"), serde_json::to_string(&query_params)?).await?;
+
+    // Write any messages we send or receive to a disk file.
+    let mut messages_file = File::create(session_state.data_path.join("messages.txt")).await?;
+    tokio::spawn(
+        async move {
+            if let Err(err) = (async || {
+                while let Some(text) = messages_sink_rx.recv().await {
+                    messages_file.write(text.as_bytes()).await?;
+                    messages_file.write(b"\n").await?;
+                }
+                Ok::<_, LineTrackingError>(())
+            })()
+            .await
+            {
+                error!("{}", err);
+            }
+        }
+        .instrument(Span::current()),
+    );
 
     // Boot up a new WebRTC peer connection to attach to the client.
     let config = RTCConfiguration {
@@ -426,12 +443,20 @@ async fn whip_post_handler(
                 // Send any errors about media tracks we never saw.
                 let expected_track_num = session_state.offered_video_tracks.len();
                 if track_num != expected_track_num {
-                    session_state.send_client(ServerMessage::error(format!("Expected [{}] media tracks to connect during the session, but [{}] connected.", expected_track_num, track_num))).await;
+                    session_state
+                        .send_client(ServerMessage::error(format!(
+                            "Expected [{}] media tracks to connect during the session, but [{}] connected.",
+                            expected_track_num, track_num
+                        )))
+                        .await;
                 }
 
                 info!("Sending SessionComplete message.");
                 if let Err(err) = session_state.client_send_tx.send(ServerMessage::SessionComplete).await {
-                    error!("Failed to send SessionComplete on general channel while closing gracefully.. [{}]", err);
+                    error!(
+                        "Failed to send SessionComplete on general channel while closing gracefully.. [{}]",
+                        err
+                    );
                 }
             }
 
@@ -589,7 +614,10 @@ fn supported_codecs() -> Vec<RTCRtpCodecParameters> {
 struct AppError(StatusCode, anyhow::Error);
 impl AppError {
     fn new(status_code: StatusCode, err: anyhow::Error) -> Self {
-        info!("Responding with error: {}", err.to_string());
+        match status_code {
+            StatusCode::INTERNAL_SERVER_ERROR => error!("Responding with Internal Server Error: {}", err.to_string()),
+            _ => info!("Responding with error: {}", err.to_string()),
+        };
         AppError(status_code, err)
     }
 }
@@ -599,7 +627,7 @@ where
     T: std::error::Error + Send + Sync + 'static,
 {
     fn from(err: T) -> Self {
-        info!("Responding with error: {}", err.to_string());
+        error!("Responding with Internal Server Error: {}", err);
         AppError(StatusCode::INTERNAL_SERVER_ERROR, anyhow::Error::msg(err.to_string()))
     }
 }
