@@ -1,7 +1,7 @@
 import { useParams } from '@solidjs/router';
 import { createResource, Show, createSignal, createMemo, onCleanup, createEffect } from 'solid-js';
 import type { JSX } from 'solid-js';
-import { SolidLogViewer, type LogEntry } from '../components/SolidLogViewer';
+import { SolidLogViewer, type LogEntry } from './SolidLogViewer';
 
 interface SessionMetadata {
   session_id: string;

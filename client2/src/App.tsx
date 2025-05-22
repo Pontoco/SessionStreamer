@@ -1,9 +1,10 @@
-import type { Component } from 'solid-js';
+import { Router, Route, A } from '@solidjs/router'; // Router is likely a function, Link a component
+import SessionDetailPage from './SessionDetailPage';
+import SessionListPage from './SessionListPage';
 
-const App: Component = () => {
-  return (
-    <p class="text-4xl text-green-700 text-center py-20">Hello tailwind!</p>
-  );
-};
-
-export default App;
+export default function App() {
+  return <Router>
+    <Route path="/" component={SessionListPage} />
+    <Route path="/session/:session_id" component={SessionDetailPage} />
+  </Router>
+}
