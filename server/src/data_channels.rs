@@ -141,7 +141,7 @@ async fn handle_generic_channel(
 
         if protocol == "timestamped_bytes" {
             if msg.is_string {
-                state.send_client_or_log_error(format!(
+                state.send_client_info(format!(
                     "data channel with protocol [{protocol}] cannot send messages of type string."
                 )).await;
                 return Err(anyhow::anyhow!("Invalid protocol.").into());

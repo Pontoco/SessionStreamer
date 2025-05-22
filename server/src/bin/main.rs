@@ -21,7 +21,7 @@ struct CommandLineArgs {
 async fn main() -> Result<()> {
     let args = CommandLineArgs::parse(); // If needed, pass args.data_path to create_server
 
-    server::default_process_setup(args.use_structured_logging);
+    server::configure_logging(args.use_structured_logging);
 
     info!("Starting server...");
     info!("CLI Args: [{:?}]", args);

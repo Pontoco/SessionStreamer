@@ -4,10 +4,12 @@ use server::{ClientMessage, ServerMessage};
 use std::{fs::File, io::BufReader, sync::Arc, time::Duration};
 use tempfile::TempDir;
 use tokio::fs;
-use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::sync::mpsc;
+use tokio::sync::mpsc::UnboundedReceiver;
 use tokio::time::{sleep, timeout};
 use tracing::{Instrument, Span, info, info_span, instrument};
+use tracing_subscriber::layer::SubscriberExt;
+use tracing_subscriber::{EnvFilter, Layer};
 use webrtc::api::media_engine;
 use webrtc::data_channel::RTCDataChannel;
 use webrtc::data_channel::data_channel_state::RTCDataChannelState;
@@ -122,7 +124,7 @@ async fn connect_peer(app: &TestServer, session_id: &str) -> Result<TestPeerSetu
 #[tokio::test]
 #[instrument(skip_all)]
 async fn test_send_h264_stream() -> Result<()> {
-    server::default_process_setup(false);
+    configure_tests_logging();
 
     let temp_output_dir = TempDir::with_prefix("session_streamer_data")?;
     let temp_output_path = temp_output_dir.path();
@@ -198,4 +200,80 @@ async fn test_send_h264_stream() -> Result<()> {
     assert_eq!(video.metadata().await?.len(), 498807); // This is the size we see observed. Regression test.
 
     Ok(())
+}
+
+// This test creates a local webrtc client and streams an h264 file to the server as if it were a game
+// session.
+#[tokio::test]
+#[instrument(skip_all)]
+async fn test_missing_media_track() -> Result<()> {
+    configure_tests_logging();
+
+    let temp_output_dir = TempDir::with_prefix("session_streamer_data")?;
+    let temp_output_path = temp_output_dir.path();
+    let session_id = "GameSession_0001_Test";
+    let app = TestServer::new(server::create_server(temp_output_path, ".")?)?;
+
+    info!("Created test server storing data at [{temp_output_path:?}].");
+
+    let TestPeerSetup(peer, track, data_channel, mut server_messages) = connect_peer(&app, session_id).await?;
+
+    // Connect a new data channel and send some test text.
+    let log_data_channel = peer.create_data_channel("test_logs", None).await?;
+
+    info!("Waiting for logs data channel to open.");
+    while log_data_channel.ready_state() != RTCDataChannelState::Open {
+        sleep(Duration::from_micros(50)).await;
+    }
+
+    info!("Sending test log data.");
+    log_data_channel.send_text("Test line 1 with a bunch of data.").await?;
+    log_data_channel.send_text("Continuation of line 1 with a bunch of data.\n").await?;
+    log_data_channel.send_text("Test line 2 with a more data").await?;
+
+    info!("Sending SessingEnding message to server.");
+    data_channel
+        .send_text(serde_json::to_string(&ClientMessage::SessionEnding)?)
+        .await?;
+
+    info!("Waiting for server to send a SessionComplete message..");
+
+    timeout(Duration::from_secs(5), async move {
+        while let Some(msg) = server_messages.recv().await {
+            // Expect to receive the 'missing tracks' error.
+            if let ServerMessage::Error { message: m } = msg {
+                info!("Got message: {}", m);
+                break;
+            }
+        }
+
+        // Expect session complete!
+        while let Some(msg) = server_messages.recv().await {
+            if let ServerMessage::SessionComplete = msg {
+                return Ok(());
+            }
+        }
+
+        anyhow::bail!("didn't find session message");
+    })
+    .await??;
+
+    info!("Closing down peer connection.");
+    peer.close().await?;
+    drop(peer);
+
+    Ok(())
+}
+
+fn configure_tests_logging() {
+    // Command line logging settings:
+    // By default, set gstreamer to warn because it's quite noisy.
+    // Filter using the environment vairable RUST_LOG)
+    let cli_log_settings = EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info,gstreamer=warn"));
+
+    let registry = tracing_subscriber::registry()
+        .with(tracing_subscriber::fmt::layer().compact().with_filter(cli_log_settings));
+
+    // If this returns Err it's already setup. Ok.
+    let _ = tracing::subscriber::set_global_default(registry);
 }
