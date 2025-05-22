@@ -127,7 +127,7 @@ async fn test_send_h264_stream() -> Result<()> {
     let temp_output_dir = TempDir::with_prefix("session_streamer_data")?;
     let temp_output_path = temp_output_dir.path();
     let session_id = "GameSession_0001_Test";
-    let app = TestServer::new(server::create_server(temp_output_path)?)?;
+    let app = TestServer::new(server::create_server(temp_output_path, ".")?)?;
 
     info!("Created test server storing data at [{temp_output_path:?}].");
 
