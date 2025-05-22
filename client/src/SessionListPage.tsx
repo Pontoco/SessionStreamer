@@ -61,12 +61,13 @@ export default function SessionListPage(): JSX.Element {
         const s = sessions();
         if (!s || s.length === 0) return [];
 
-        // Filter for sessions that have a valid timestamp string
-        const sessionsWithTimestamp = s.filter(session => typeof session.timestamp_utc === 'string' && session.timestamp_utc.length > 0);
-
-        return [...sessionsWithTimestamp] // Create a shallow copy before sorting
+        return [...s] // Create a shallow copy before sorting
             .sort((a, b) => {
                 // Sort descending (newest first)
+                if (!a.timestamp && !b.timestamp) return 0;
+                if (!a.timestamp) return 1; // b comes first
+                if (!b.timestamp) return -1; // a comes first
+
                 return b.timestamp.localeCompare(a.timestamp);
             })
             .map(session => ({
