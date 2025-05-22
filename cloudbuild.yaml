@@ -24,6 +24,8 @@ steps:
       - build
       - '-t'
       - '$_IMAGE_NAME:$COMMIT_SHA'
+      - '-t'
+      - '$_IMAGE_NAME:latest'
       - '--cache-from'
       - '$_IMAGE_NAME:latest' # use the latest tagged image to pull cached layers from
       - .
@@ -37,6 +39,7 @@ steps:
     args:
       - push
       - '$_IMAGE_NAME:$COMMIT_SHA'
+      - '--all-tags'
     id: Push
   
   # Deploy to K8s

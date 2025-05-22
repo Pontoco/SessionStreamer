@@ -1,3 +1,11 @@
+# Build the client distribution.
+FROM node:latest as client_builder
+WORKDIR /usr/src/app/client
+RUN npm install -g vite
+COPY ./client .
+RUN npm install
+RUN vite build
+
 # ---- Cargo chef / Builder stage----
 FROM rust:latest as chef
 
@@ -11,7 +19,7 @@ COPY ./vendor ./vendor
 
 RUN cd server && cargo chef prepare --recipe-path recipe.json
 
-FROM chef as builder
+FROM chef as server_builder
 
 # Install build dependencies for Rust and GStreamer
 RUN apt-get update && apt-get install -y \
@@ -30,22 +38,12 @@ COPY --from=planner /usr/src/app/server/recipe.json recipe.json
 # Vendor is part of our dependencies
 COPY ./vendor ../vendor
 
-# Install client tools
-RUN curl -fsSL https://deno.land/install.sh | sh
-RUN /root/.deno/bin/deno install -g npm:vite
-
 # Build dependencies - this is the caching Docker layer!
 RUN cargo chef cook --release --recipe-path recipe.json
 
 # Build the server binary.
 COPY ./server .
 RUN cargo build --release --bin main
-
-# Build the client distribution.
-WORKDIR /usr/src/app/client
-COPY ./client .
-RUN /root/.deno/bin/deno install
-RUN /root/.deno/bin/deno run build
 
 # ---- Runner Stage ----
 FROM debian:bookworm-slim
@@ -74,13 +72,13 @@ WORKDIR /usr/src/app
 
 # Copy the compiled binary from the builder stage
 # Adjust 'server' if your binary name is different
-COPY --from=builder /usr/src/app/server/target/release/main .
-COPY --from=builder /usr/src/app/client/dist ./client_dist
+COPY --from=server_builder /usr/src/app/server/target/release/main .
+COPY --from=client_builder /usr/src/app/client/dist ./client_dist
 
 # Expose the port. 
 EXPOSE 3000
 
 # Use a more detailed logging for the server by default.
-ENV RUST_LOG "info,gstreamer=warn,server=debug"
+ENV RUST_LOG="info,gstreamer=warn,server=debug"
 
 ENTRYPOINT ["/usr/src/app/main", "--use-structured-logging", "--client-files=./client_dist"]

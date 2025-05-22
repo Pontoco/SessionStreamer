@@ -2,20 +2,31 @@ import tailwindcss from '@tailwindcss/vite';
 import { defineConfig } from 'vite';
 import solidPlugin from 'vite-plugin-solid';
 
+// Set this flag to have our dev server proxy backend requests to the production live server.
+let use_prod_server = true;
+
+var target;
+if (use_prod_server) {
+  target = "http://35.232.163.159";
+} else {
+  target = 'http://localhost:3000';
+}
+
 export default defineConfig({
   plugins: [solidPlugin(), tailwindcss()],
   server: {
     port: 8080,
     proxy: {
       '/rest': {
-        target: 'http://localhost:3000',
+        target: target,
         changeOrigin: true,
         secure: false,
       },
       '/data': {
-        target: 'http://localhost:3000',
+        target: target,
         changeOrigin: true,
         secure: false,
+
         configure: (proxy, options) => {
           // proxy.on('error', (err, req, res) => {
           //   console.log('Proxy error:', err);
