@@ -443,6 +443,10 @@ async fn whip_post_handler(
                 // Send any errors about media tracks we never saw.
                 let expected_track_num = session_state.offered_video_tracks.len();
                 if track_num != expected_track_num {
+                    error!(
+                        "Expected [{}] media tracks to connect during the session, but [{}] connected.",
+                        expected_track_num, track_num
+                    );
                     session_state
                         .send_client(ServerMessage::error(format!(
                             "Expected [{}] media tracks to connect during the session, but [{}] connected.",
