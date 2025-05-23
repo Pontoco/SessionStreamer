@@ -7,7 +7,7 @@ let use_prod_server = true;
 
 var target;
 if (use_prod_server) {
-  target = "http://35.232.163.159:3000";
+  target = "https://stream.pontoco.com";
 } else {
   target = 'http://localhost:3000';
 }
