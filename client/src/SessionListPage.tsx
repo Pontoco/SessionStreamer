@@ -81,7 +81,7 @@ export default function SessionListPage(): JSX.Element {
         {
             accessorKey: 'session_id',
             header: 'Session ID',
-            cell: info => <A class="text-blue-600 hover:text-blue-800 hover:underline" href={`/session/${info.getValue()}`}>{String(info.getValue())}</A>,
+            cell: info => <A class="text-brand-700 hover:text-brand-600 hover:underline font-medium" href={`/session/${info.getValue()}`}>{String(info.getValue())}</A>,
             enableSorting: true,
             enableColumnFilter: true,
         },
@@ -124,63 +124,67 @@ export default function SessionListPage(): JSX.Element {
     });
 
     return (
-        <div class="p-5">
-            <h1 class="text-2xl font-bold mb-4">Session List</h1>
-            <Show when={!sessions.loading} fallback={<p>Loading sessions...</p>}>
-                <Show when={sessions() && sessions()!.length > 0} fallback={<p>No sessions found.</p>}>
-                    <table class="w-full border-collapse border border-gray-300">
-                        <thead>
-                            <For each={table.getHeaderGroups()}>
-                                {headerGroup => (
-                                    <tr>
-                                        <For each={headerGroup.headers}>
-                                            {header => (
-                                                <th class="p-2 border border-gray-300 bg-gray-100 align-top">
-                                                    <div
-                                                        class={header.column.getCanSort() ? 'cursor-pointer select-none' : 'select-none'}
-                                                        onClick={header.column.getToggleSortingHandler()}
-                                                    >
-                                                        {flexRender(header.column.columnDef.header, header.getContext())}
-                                                        {{
-                                                            asc: ' 🔼',
-                                                            desc: ' 🔽',
-                                                        }[header.column.getIsSorted() as string] ?? ''}
-                                                    </div>
-                                                    {header.column.getCanFilter() ? (
-                                                        <div class="mt-1">
-                                                            <input
-                                                                type="text"
-                                                                value={(header.column.getFilterValue() ?? '') as string}
-                                                                onInput={e => header.column.setFilterValue(e.currentTarget.value)}
-                                                                placeholder={`Filter...`}
-                                                                class="w-[calc(100%-10px)] p-[2px_4px] box-border border border-gray-300 rounded-sm text-sm"
-                                                                onClick={e => e.stopPropagation()} // Prevent sort when clicking filter input
-                                                            />
+        <div class="p-6 sm:p-8 max-w-full mx-auto"> {/* Adjusted padding and constrained width */}
+            <h1 class="text-heading-2 mb-6">Session List</h1> {/* Use heading style and adjust margin */}
+            <Show when={!sessions.loading} fallback={<p class="text-neutral-500">Loading sessions...</p>}>
+                <Show when={sessions() && sessions()!.length > 0} fallback={<p class="text-neutral-500">No sessions found.</p>}>
+                    <div class="overflow-x-auto"> {/* Added for responsiveness on small screens */}
+                        <table class="min-w-full divide-y divide-neutral-200"> {/* Removed outer border, added divide for rows */}
+                            <thead class="bg-neutral-50"> {/* Thead background */}
+                                <For each={table.getHeaderGroups()}>
+                                    {headerGroup => (
+                                        <tr>
+                                            <For each={headerGroup.headers}>
+                                                {header => (
+                                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider border-b-2 border-neutral-200">
+                                                        <div
+                                                            class={`flex items-center gap-1 ${header.column.getCanSort() ? 'cursor-pointer select-none' : 'select-none'}`}
+                                                            onClick={header.column.getToggleSortingHandler()}
+                                                        >
+                                                            {flexRender(header.column.columnDef.header, header.getContext())}
+                                                            <span class="text-neutral-400">
+                                                            {{
+                                                                asc: '↑', // Simpler sort indicators
+                                                                desc: '↓',
+                                                            }[header.column.getIsSorted() as string] ?? ''}
+                                                            </span>
                                                         </div>
-                                                    ) : null}
-                                                </th>
-                                            )}
-                                        </For>
-                                    </tr>
-                                )}
-                            </For>
-                        </thead>
-                        <tbody>
-                            <For each={table.getRowModel().rows}>
-                                {row => (
-                                    <tr>
-                                        <For each={row.getVisibleCells()}>
-                                            {cell => (
-                                                <td class="p-2 border border-gray-300">
-                                                    {flexRender(cell.column.columnDef.cell, cell.getContext())}
-                                                </td>
-                                            )}
-                                        </For>
-                                    </tr>
-                                )}
-                            </For>
-                        </tbody>
-                    </table>
+                                                        {header.column.getCanFilter() ? (
+                                                            <div class="mt-1.5"> {/* Adjusted margin */}
+                                                                <input
+                                                                    type="text"
+                                                                    value={(header.column.getFilterValue() ?? '') as string}
+                                                                    onInput={e => header.column.setFilterValue(e.currentTarget.value)}
+                                                                    placeholder={`Filter...`}
+                                                                    class="block w-full rounded-md border-neutral-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 sm:text-xs p-1.5"
+                                                                    onClick={e => e.stopPropagation()} // Prevent sort when clicking filter input
+                                                                />
+                                                            </div>
+                                                        ) : null}
+                                                    </th>
+                                                )}
+                                            </For>
+                                        </tr>
+                                    )}
+                                </For>
+                            </thead>
+                            <tbody class="bg-white divide-y divide-neutral-100"> {/* Body background and row divide */}
+                                <For each={table.getRowModel().rows}>
+                                    {row => (
+                                        <tr class="hover:bg-neutral-50 transition-colors"> {/* Added hover effect */}
+                                            <For each={row.getVisibleCells()}>
+                                                {cell => (
+                                                    <td class="px-4 py-3 whitespace-nowrap text-sm text-neutral-700">
+                                                        {flexRender(cell.column.columnDef.cell, cell.getContext())}
+                                                    </td>
+                                                )}
+                                            </For>
+                                        </tr>
+                                    )}
+                                </For>
+                            </tbody>
+                        </table>
+                    </div>
                 </Show>
             </Show>
         </div>

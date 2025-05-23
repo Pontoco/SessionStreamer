@@ -5,3 +5,36 @@
 @theme {
     /* new v4 theme stuff goes here */
 }
+
+@layer base {
+    body {
+        @apply bg-default-background text-default-font font-body antialiased;
+    }
+
+    a {
+        /* Using a slightly more subtle link style inspired by Linear's typical interface links */
+        @apply text-brand-700 hover:text-brand-600 hover:underline;
+        /* For more prominent call-to-action links, specific classes can be used. */
+    }
+
+    h1 {
+        @apply text-heading-1; /* Defined in tailwind.config.js */
+    }
+
+    h2 {
+        @apply text-heading-2; /* Defined in tailwind.config.js */
+    }
+
+    h3 {
+        @apply text-heading-3; /* Defined in tailwind.config.js */
+    }
+
+    /* Add other global base styles as needed */
+    /* For example, ensuring form elements have some base styling if not using solid-ui components everywhere initially */
+    input,
+    textarea,
+    select,
+    button {
+        @apply font-body; /* Ensure form elements also use the Inter font by default */
+    }
+}
