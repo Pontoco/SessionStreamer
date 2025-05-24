@@ -170,10 +170,10 @@ export default function SessionDetailPage(): JSX.Element {
           <div id="content" class="flex flex-col flex-grow">
             <h1 class="text-heading-2">Session: {data().metadata.session_id}</h1>
 
-            <div id="two-columns" class="flex flex-grow flex-row">
-              <div id="left" class="flex-grow">
+            <div id="two-columns" class="flex flex-grow flex-row" >
+              <div id="left" style="min-width: 0; flex: 1 1 0;">
                 <h2 class="text-heading-3 mb-4">Video</h2>
-                <video ref={videoRef} controls width="100%" src={data().video_url} class="rounded">
+                <video ref={videoRef} controls src={data().video_url} class="rounded" style="min-width: 0;">
                   Your browser does not support the video tag.
                 </video>
 
@@ -184,9 +184,10 @@ export default function SessionDetailPage(): JSX.Element {
                   </pre>
                 </div>
               </div>
-              <div id="right" class="flex flex-col flex-grow">
+              <div id="right" class="flex flex-col" style="flex: 1 1 0;">
                 <h2 class="text-heading-3 mb-4">Unity Log</h2>
                   <div class="flex flex-wrap gap-2.5">
+
                     <input
                       type="text"
                       placeholder="Filter logs..."
@@ -194,6 +195,7 @@ export default function SessionDetailPage(): JSX.Element {
                       onInput={(e) => setFilterText(e.currentTarget.value)}
                       class="block w-full sm:w-[300px] rounded-md border-neutral-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 sm:text-sm p-2"
                     />
+
                     <label class="flex items-center gap-2 text-sm text-neutral-700 cursor-pointer select-none">
                       <input
                         type="checkbox"
@@ -203,6 +205,7 @@ export default function SessionDetailPage(): JSX.Element {
                       />
                       Show Timestamps
                     </label>
+
                     <label class="flex items-center gap-2 text-sm text-neutral-700 cursor-pointer select-none">
                       <input
                         type="checkbox"
@@ -213,6 +216,7 @@ export default function SessionDetailPage(): JSX.Element {
                       Scroll With Video
                     </label>
                   </div>
+
                 <SolidLogViewer
                   class="flex-grow"
                   logs={processedLogs}
@@ -220,6 +224,7 @@ export default function SessionDetailPage(): JSX.Element {
                   showTimestamps={showTimestamps}
                   targetLogIndex={targetLogIndexToScroll}
                 />
+
                 <Show when={!rawLogContent.loading && rawLogContent() === undefined && sessionData()?.log_url}>
                   <p class="mt-2 text-sm text-neutral-500">Log file specified but could not be loaded.</p> {/* Added some margin and styling */}
                 </Show>
