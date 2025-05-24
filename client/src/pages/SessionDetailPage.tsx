@@ -4,6 +4,18 @@ import { useSession, type SessionData, type SessionMetadata } from '../hooks/use
 import { Loading } from '../components/common/Loading';
 import { NotFound } from '../components/common/NotFound';
 import { SolidLogViewer, type LogEntry } from '../components/common/SolidLogViewer';
+import {
+  SidebarProvider,
+  Sidebar,
+  SidebarTrigger,
+  SidebarHeader,
+  SidebarContent,
+  SidebarFooter,
+  SidebarMenu,
+  SidebarMenuItem,
+  SidebarMenuButton,
+  SidebarInset
+} from '../solid_ui/sidebar';
 
 interface FilterControlsProps {
   filterText: Accessor<string>;
@@ -210,6 +222,31 @@ function MetadataPane(props: {
   );
 }
 
+function SessionDetailSidebar(): JSX.Element {
+  return (
+    <Sidebar>
+      <SidebarHeader>
+        <h2 class="text-lg font-semibold">Session Details</h2>
+      </SidebarHeader>
+      <SidebarContent>
+        <SidebarMenu>
+          <SidebarMenuItem>
+            <SidebarMenuButton>Overview</SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton>Event Log</SidebarMenuButton>
+          </SidebarMenuItem>
+          <SidebarMenuItem>
+            <SidebarMenuButton>Performance Metrics</SidebarMenuButton>
+          </SidebarMenuItem>
+        </SidebarMenu>
+      </SidebarContent>
+      <SidebarFooter>
+        <p class="text-xs text-neutral-500 p-2">Version 1.0</p>
+      </SidebarFooter>
+    </Sidebar>
+  );
+}
 
 export default function SessionDetailPage(): JSX.Element {
   const params = useParams();
@@ -235,29 +272,39 @@ export default function SessionDetailPage(): JSX.Element {
         when={!sessionData()}
         fallback={<p class="text-neutral-500 px-6 sm:px-8 py-6 sm:py-8">Session not found or failed to load.</p>}
       >
-        <main class="h-screen flex flex-col p-6 bg-neutral-50 dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200">
-          <h1 class="text-heading-2 mb-4">Session: {sessionData()!.metadata.session_id}</h1>
-          <div class="flex-grow grid lg:grid-cols-[1fr_minmax(0,_2fr)] gap-6 overflow-hidden">
-            <div class="flex flex-col gap-6 overflow-y-auto p-1">
-              <VideoPane src={() => sessionData()!.video_url} ref={setVideoRef} />
-              <MetadataPane metadata={() => sessionData()!.metadata} />
-            </div>
-            <div class="flex flex-col min-h-0">
-              <LogPane
-                rawLogContent={rawLogContent}
-                sessionMetadata={() => sessionData()!.metadata}
-                videoRef={getVideoRef}
-                filterText={filterText}
-                setFilterText={setFilterText}
-                showTimestamps={showTimestamps}
-                setShowTimestamps={setShowTimestamps}
-                scrollWithVideo={scrollWithVideo}
-                setScrollWithVideo={setScrollWithVideo}
-                isLoading={() => rawLogContent.loading}
-              />
-            </div>
+        <SidebarProvider defaultOpen={false}>
+          <div class="flex h-screen">
+            <SessionDetailSidebar />
+            <SidebarInset class="flex-grow flex flex-col overflow-auto">
+              <div class="flex items-center justify-between p-4 border-b border-neutral-200 dark:border-neutral-700">
+                <SidebarTrigger />
+                <h1 class="text-heading-2">Session: {sessionData()!.metadata.session_id}</h1>
+              </div>
+              <div class="p-6 flex-grow flex flex-col bg-neutral-50 dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200">
+                <div class="flex-grow grid lg:grid-cols-[1fr_minmax(0,_2fr)] gap-6 overflow-hidden">
+                  <div class="flex flex-col gap-6 overflow-y-auto p-1">
+                    <VideoPane src={() => sessionData()!.video_url} ref={setVideoRef} />
+                    <MetadataPane metadata={() => sessionData()!.metadata} />
+                  </div>
+                  <div class="flex flex-col min-h-0">
+                    <LogPane
+                      rawLogContent={rawLogContent}
+                      sessionMetadata={() => sessionData()!.metadata}
+                      videoRef={getVideoRef}
+                      filterText={filterText}
+                      setFilterText={setFilterText}
+                      showTimestamps={showTimestamps}
+                      setShowTimestamps={setShowTimestamps}
+                      scrollWithVideo={scrollWithVideo}
+                      setScrollWithVideo={setScrollWithVideo}
+                      isLoading={() => rawLogContent.loading}
+                    />
+                  </div>
+                </div>
+              </div>
+            </SidebarInset>
           </div>
-        </main>
+        </SidebarProvider>
       </NotFound>
     </Loading>
   );
