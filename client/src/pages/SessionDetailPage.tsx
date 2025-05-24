@@ -17,6 +17,13 @@ import {
   SidebarMenuButton,
   SidebarInset
 } from '../solid_ui/sidebar';
+import {
+  Breadcrumb,
+  BreadcrumbList,
+  BreadcrumbItem,
+  BreadcrumbLink,
+  BreadcrumbSeparator
+} from '../solid_ui/breadcrumb';
 
 interface FilterControlsProps {
   filterText: Accessor<string>;
@@ -357,8 +364,26 @@ export default function SessionDetailPage(): JSX.Element {
             />
             <SidebarInset class="flex-grow flex flex-col overflow-auto">
               <div class="flex items-center justify-between p-4 border-b border-neutral-200 dark:border-neutral-700">
+                <Breadcrumb>
+                  <BreadcrumbList>
+                    <BreadcrumbItem>
+                      <BreadcrumbLink as={A} href="/">
+                        Sessions
+                      </BreadcrumbLink>
+                    </BreadcrumbItem>
+                    <BreadcrumbSeparator />
+                    <Show when={sessionData()?.metadata?.username}>
+                      <BreadcrumbItem>
+                        <span>{sessionData()!.metadata.username}</span>
+                      </BreadcrumbItem>
+                      <BreadcrumbSeparator />
+                    </Show>
+                    <BreadcrumbItem>
+                      <span>{params.session_id}</span>
+                    </BreadcrumbItem>
+                  </BreadcrumbList>
+                </Breadcrumb>
                 <SidebarTrigger />
-                <h1 class="text-heading-2">Session: {sessionData()!.metadata.session_id}</h1>
               </div>
               <div class="p-6 flex-grow flex flex-col bg-neutral-50 dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200">
                 <div class="flex-grow grid lg:grid-cols-2 gap-6 overflow-hidden">
