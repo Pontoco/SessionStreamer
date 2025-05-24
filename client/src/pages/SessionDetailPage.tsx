@@ -1,7 +1,7 @@
 import { useParams, A } from '@solidjs/router';
 import { createSignal, createMemo, onCleanup, createEffect, Show, type JSX, type Accessor, type Setter, For } from 'solid-js';
 import { useSession, type SessionData, type SessionMetadata } from '../hooks/useSession';
-import { useAllSessions, type SessionListEntry } from '../hooks/useSessionList';
+import { useAllSessions } from '../hooks/useSessionList';
 import { Icon } from 'solid-heroicons';
 import { queueList } from 'solid-heroicons/solid';
 import { Loading } from '../components/common/Loading';
@@ -119,11 +119,13 @@ function LogPane(props: LogPaneProps): JSX.Element {
     const sMeta = props.sessionMetadata();
     const videoElement = props.videoRef();
 
-    if (!videoElement || !sMeta || !sMeta.timestamp || !props.scrollWithVideo()) {
+    if (!videoElement || !sMeta || !sMeta.timestamp_utc || !props.scrollWithVideo()) {
+      console.log("Skipping time update setup: videoElement, session metadata, or scrollWithVideo condition not met.");
+      console.log("videoElement:", videoElement, "sessionMetadata:", sMeta, "scrollWithVideo:", props.scrollWithVideo());
       return;
     }
 
-    const baseTimestampStr = sMeta.timestamp as string;
+    const baseTimestampStr = sMeta.timestamp_utc as string;
     let baseTimeMs: number;
     try {
       baseTimeMs = Date.parse(baseTimestampStr);
@@ -138,6 +140,7 @@ function LogPane(props: LogPaneProps): JSX.Element {
 
     const handleTimeUpdate = () => {
       if (!videoElement) return;
+      console.log("Video time updated:", videoElement.currentTime);
       const currentVideoTimeMs = videoElement.currentTime * 1000;
       const currentAbsoluteTime = new Date(baseTimeMs + currentVideoTimeMs);
 
@@ -158,6 +161,8 @@ function LogPane(props: LogPaneProps): JSX.Element {
         }
       }
 
+
+      console.log("Found log index to scroll to:", foundIndex, "for current time:", currentAbsoluteTime.toISOString());
       if (foundIndex === null && logs.length > 0 && logs[0].timestamp && logs[0].timestamp.getTime() > currentAbsoluteTime.getTime()) {
         setTargetLogIndexToScroll(null);
       } else {
@@ -165,6 +170,7 @@ function LogPane(props: LogPaneProps): JSX.Element {
       }
     };
 
+    console.log("Setting up timeupdate listener for video element:", videoElement);
     videoElement.addEventListener('timeupdate', handleTimeUpdate);
     onCleanup(() => {
       videoElement.removeEventListener('timeupdate', handleTimeUpdate);
@@ -274,7 +280,7 @@ function SessionDetailSidebar(props: SessionDetailSidebarProps): JSX.Element {
 
     return sessions.filter(
       (s) => s.username === username && s.session_id !== id
-    ).sort((a, b) => new Date(b.timestampUtc).getTime() - new Date(a.timestampUtc).getTime());
+    ).sort((a, b) => new Date(b.timestamp_utc).getTime() - new Date(a.timestamp_utc).getTime());
   });
 
   return (
@@ -308,7 +314,7 @@ function SessionDetailSidebar(props: SessionDetailSidebarProps): JSX.Element {
           <Show when={!allSessions.loading && !allSessions.error && relatedSessions().length > 0}>
             <SidebarMenu class="gap-4" >
               <For each={relatedSessions()}>
-                {(session: SessionListEntry, i) => (
+                {(session: SessionMetadata, i) => (
                   <SidebarMenuItem>
                     <A href={`/session/${session.session_id}`} class="w-full block">
                       <SidebarMenuButton class="w-full text-left">

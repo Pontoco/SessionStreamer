@@ -2,7 +2,7 @@ import { createResource, type Accessor } from 'solid-js';
 
 export interface SessionMetadata {
   session_id: string;
-  timestamp?: string; // Added optional timestamp, as it's used for video sync
+  timestamp_utc?: string; // Added optional timestamp, as it's used for video sync
   username?: string; // Added optional username for listing related sessions
   [key: string]: any;
 }
