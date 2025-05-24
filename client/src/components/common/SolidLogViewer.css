@@ -30,19 +30,16 @@
 }
 
 .log-container {
-  position: relative; /* Needed for virtualizer positioning */
+  position: relative;
   font-family: monospace;
   font-size: 14px;
-  /* height and overflow are dynamic, set by props/inline */
 }
 
 .log-item {
-  padding: 0 8px; /* Small padding for each item */
+  padding: 0 8px;
   box-sizing: border-box;
   display: flex;
   align-items: flex-start;
-  /* Positional styles (position, top, left, width, transform) are dynamic and inline */
-  /* Height is determined by content and virtualizer measurement */
 }
 
 .log-item:hover {
@@ -60,17 +57,15 @@
   text-wrap: nowrap;
 }
 
-.placeholder, 
+.placeholder,
 .loading-indicator {
   display: flex;
   justify-content: center;
   align-items: center;
-  height: 100%; /* Ensure placeholder/loader takes full container height if container has fixed height */
+  height: 100%;
   color: #777;
   font-family: sans-serif;
 }
 
-/* Ensure loading indicator also uses containerHeight if provided for consistency */
 .loading-indicator {
-  /* display, align-items, justify-content are already covered */
 }

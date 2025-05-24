@@ -1,6 +1,6 @@
 import { createSignal, createEffect, onCleanup, For, Show, createMemo, Accessor, JSX, ComponentProps, splitProps } from 'solid-js';
 import { createVirtualizer, VirtualItem } from '@tanstack/solid-virtual';
-import { cn } from './solid_ui/utils';
+import { cn } from '../../solid_ui/utils';
 
 // Define the structure for a log entry
 export interface LogEntry {
@@ -31,7 +31,6 @@ export function SolidLogViewer(props: LogViewerProps) {
   const itemHeight = () => props.defaultItemHeight || 22; // Estimated height of a single log line
   const placeholderMessage = () => props.placeholder || 'No logs to display.';
 
-  // Filter logs based on search term
   const filteredLogs = createMemo(() => {
     const term = searchTerm().toLowerCase();
     if (!term) {
@@ -48,19 +47,16 @@ export function SolidLogViewer(props: LogViewerProps) {
     // `scrollToFn`, `observeElementRect`, `observeElementOffset` will use defaults
     // or need to be explicitly set if defaults are not sufficient or if they are required by setOptions.
     // For now, let's assume they are handled by the library if not specified in the initial object for createVirtualizer
-    // and that setOptions needs them if they were part of the "full" options set.
+    // and that setOptions needs a *complete* set if it's replacing.
     // The error implies setOptions needs a *complete* set if it's replacing.
   };
 
-  console.log('Creating virtualizer with options:', initialVirtualizerOptions);
   const rowVirtualizer = createVirtualizer<HTMLDivElement, Element>({
     ...initialVirtualizerOptions,
     count: filteredLogs().length, // Initial count
   });
 
-  // Effect to update virtualizer options when log count or other relevant reactive sources change
   createEffect(() => {
-    console.log('Creating virtualizer with count:', filteredLogs().length);
     rowVirtualizer.setOptions({
       ...rowVirtualizer.options, // Spread the current options from the instance
       count: filteredLogs().length, // Override the count
@@ -71,7 +67,6 @@ export function SolidLogViewer(props: LogViewerProps) {
     }
   });
 
-  // Effect to scroll to a target index when props.targetLogIndex changes
   createEffect(() => {
     const targetIndex = props.targetLogIndex ? props.targetLogIndex() : null;
     if (typeof targetIndex === 'number' && targetIndex >= 0 && targetIndex < filteredLogs().length) {
@@ -85,7 +80,6 @@ export function SolidLogViewer(props: LogViewerProps) {
     }
   });
 
-  // Handle Ctrl+F / Cmd+F for search
   createEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
       if ((event.metaKey || event.ctrlKey) && event.key === 'f') {
@@ -106,7 +100,6 @@ export function SolidLogViewer(props: LogViewerProps) {
     });
   });
 
-  // Focus search input when it becomes active
   createEffect(() => {
     if (isSearchActive()) {
       searchInputRef?.focus();
@@ -181,59 +174,6 @@ export function SolidLogViewer(props: LogViewerProps) {
       </div>
 
 
-      {/* <Show when={props.isLoading()} fallback={
-        <div
-          ref={parentRef}
-          class="flex-grow min-h-0 overflow-auto" // Added relative for consistency, though inner div has it for items
-        >
-          <Show when={filteredLogs().length > 0} fallback={
-             <div class="justify-center items-center h-full text-gray-600 font-sans">
-               {searchTerm() ? 'No matching logs.' : placeholderMessage()}
-             </div>
-          }>
-            <div // The main div that is the size of the log lines.
-              style={{ // These styles are essential for the virtualizer's calculations
-                height: `${rowVirtualizer.getTotalSize()}px`,
-                width: '100%',
-                position: 'relative',
-              }}
-            >
-              <For each={rowVirtualizer.getVirtualItems()}>
-                {(virtualRow: VirtualItem) => {
-                  const log = filteredLogs()[virtualRow.index];
-                  return (
-                    <div
-                      class="px-2 flex items-start hover:bg-gray-50 box-border"
-                      style={{
-                        position: 'absolute',
-                        top: '0',
-                        left: '0',
-                        width: '100%',
-                        // height is determined by content & virtualizer measurement
-                        transform: `translateY(${virtualRow.start}px)`,
-                      }}
-                      data-index={virtualRow.index}
-                    >
-                      <Show when={defaultShowTimestamps() && log?.timestamp}>
-                        <span class="mr-2.5 text-gray-500 whitespace-nowrap">
-                          {log ? formatTimestamp(log!.timestamp!) : ''}
-                        </span>
-                      </Show>
-                      <span class="flex-grow whitespace-nowrap"> 
-                        {log ? highlightMatch(log!.message, searchTerm()) : ''}
-                      </span>
-                    </div>
-                  );
-                }}
-              </For>
-            </div>
-          </Show>
-        </div>
-      }>
-        <div class="flex justify-center items-center text-gray-600 font-sans" >
-          Loading logs...
-        </div>
-      </Show> */}
     </div>
   );
 }
