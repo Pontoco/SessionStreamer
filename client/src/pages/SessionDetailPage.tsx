@@ -265,7 +265,7 @@ function SessionDetailSidebar(props: SessionDetailSidebarProps): JSX.Element {
 
     return sessions.filter(
       (s) => s.username === username && s.session_id !== id
-    ).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+    ).sort((a, b) => new Date(b.timestampUtc).getTime() - new Date(a.timestampUtc).getTime());
   });
 
   return (
@@ -297,17 +297,17 @@ function SessionDetailSidebar(props: SessionDetailSidebarProps): JSX.Element {
             <p class="p-3 text-sm text-neutral-500">No other sessions found for {currentUsername()}.</p>
           </Show>
           <Show when={!allSessions.loading && !allSessions.error && relatedSessions().length > 0}>
-            <SidebarMenu>
+            <SidebarMenu class="gap-4" >
               <For each={relatedSessions()}>
-                {(session: SessionListEntry) => (
+                {(session: SessionListEntry, i) => (
                   <SidebarMenuItem>
                     <A href={`/session/${session.session_id}`} class="w-full block">
                       <SidebarMenuButton class="w-full text-left">
                         <div class="flex flex-col">
-                          <span>ID: {session.session_id.substring(0, 8)}...</span>
-                          <span class="text-xs text-neutral-500 dark:text-neutral-400">
-                            {new Date(session.timestamp).toLocaleString()}
+                          <span class="">
+                            <b>{(i()+1)}</b>: {new Date(session.timestamp_utc).toLocaleString()}
                           </span>
+                          <span class="text-xs text-neutral-500 dark:text-neutral-400">ID: {session.session_id.substring(0, 8)}...</span>
                         </div>
                       </SidebarMenuButton>
                     </A>

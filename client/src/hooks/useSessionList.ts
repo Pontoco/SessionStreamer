@@ -2,7 +2,7 @@ import { createResource } from 'solid-js';
 
 export interface SessionListEntry {
     session_id: string;
-    timestamp: string;
+    timestamp_utc: string;
     username?: string;
     [key: string]: any; // To accommodate any other fields from /rest/list
 }
