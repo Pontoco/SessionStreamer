@@ -1,6 +1,7 @@
-import { useParams } from '@solidjs/router';
-import { createSignal, createMemo, onCleanup, createEffect, Show, type JSX, type Accessor, type Setter } from 'solid-js';
+import { useParams, A } from '@solidjs/router';
+import { createSignal, createMemo, onCleanup, createEffect, Show, type JSX, type Accessor, type Setter, For } from 'solid-js';
 import { useSession, type SessionData, type SessionMetadata } from '../hooks/useSession';
+import { useAllSessions, type SessionListEntry } from '../hooks/useSessionList';
 import { Loading } from '../components/common/Loading';
 import { NotFound } from '../components/common/NotFound';
 import { SolidLogViewer, type LogEntry } from '../components/common/SolidLogViewer';
@@ -244,27 +245,81 @@ function MetadataPane(props: {
   );
 }
 
-function SessionDetailSidebar(): JSX.Element {
+interface SessionDetailSidebarProps {
+  currentSessionMetadata: Accessor<SessionMetadata | null | undefined>;
+  currentSessionId: Accessor<string | undefined>;
+}
+
+function SessionDetailSidebar(props: SessionDetailSidebarProps): JSX.Element {
+  const allSessions = useAllSessions();
+
+  const currentUsername = createMemo(() => props.currentSessionMetadata()?.username);
+  const currentId = createMemo(() => props.currentSessionId());
+
+  const relatedSessions = createMemo(() => {
+    const username = currentUsername();
+    const id = currentId();
+    const sessions = allSessions();
+
+    if (!username || !sessions || !id) return [];
+
+    return sessions.filter(
+      (s) => s.username === username && s.session_id !== id
+    ).sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+  });
+
   return (
     <Sidebar>
       <SidebarHeader>
-        <h2 class="text-lg font-semibold">Session Details</h2>
+        <Show
+          when={currentUsername()}
+          fallback={<h2 class="text-lg font-semibold px-2 py-1">Session Info</h2>}
+        >
+          <h2 class="text-lg font-semibold px-2 py-1">Sessions for {currentUsername()}</h2>
+        </Show>
       </SidebarHeader>
       <SidebarContent>
-        <SidebarMenu>
-          <SidebarMenuItem>
-            <SidebarMenuButton>Overview</SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton>Event Log</SidebarMenuButton>
-          </SidebarMenuItem>
-          <SidebarMenuItem>
-            <SidebarMenuButton>Performance Metrics</SidebarMenuButton>
-          </SidebarMenuItem>
-        </SidebarMenu>
+        <Show
+          when={currentUsername()}
+          fallback={
+            <p class="p-3 text-sm text-neutral-500">
+              Username not found in this session's metadata. Cannot display related sessions.
+            </p>
+          }
+        >
+          <Show when={allSessions.loading}>
+            <p class="p-3 text-sm text-neutral-500">Loading other sessions...</p>
+          </Show>
+          <Show when={!allSessions.loading && allSessions.error}>
+            <p class="p-3 text-sm text-red-500">Error loading session list.</p>
+          </Show>
+          <Show when={!allSessions.loading && !allSessions.error && relatedSessions().length === 0}>
+            <p class="p-3 text-sm text-neutral-500">No other sessions found for {currentUsername()}.</p>
+          </Show>
+          <Show when={!allSessions.loading && !allSessions.error && relatedSessions().length > 0}>
+            <SidebarMenu>
+              <For each={relatedSessions()}>
+                {(session: SessionListEntry) => (
+                  <SidebarMenuItem>
+                    <A href={`/session/${session.session_id}`} class="w-full block">
+                      <SidebarMenuButton class="w-full text-left">
+                        <div class="flex flex-col">
+                          <span>ID: {session.session_id.substring(0, 8)}...</span>
+                          <span class="text-xs text-neutral-500 dark:text-neutral-400">
+                            {new Date(session.timestamp).toLocaleString()}
+                          </span>
+                        </div>
+                      </SidebarMenuButton>
+                    </A>
+                  </SidebarMenuItem>
+                )}
+              </For>
+            </SidebarMenu>
+          </Show>
+        </Show>
       </SidebarContent>
       <SidebarFooter>
-        <p class="text-xs text-neutral-500 p-2">Version 1.0</p>
+        <p class="text-xs text-neutral-500 p-2">SessionStreamer v1.0</p>
       </SidebarFooter>
     </Sidebar>
   );
@@ -296,7 +351,10 @@ export default function SessionDetailPage(): JSX.Element {
       >
         <SidebarProvider defaultOpen={false}>
           <div class="flex h-screen">
-            <SessionDetailSidebar />
+            <SessionDetailSidebar
+              currentSessionMetadata={() => sessionData()?.metadata}
+              currentSessionId={() => params.session_id}
+            />
             <SidebarInset class="flex-grow flex flex-col overflow-auto">
               <div class="flex items-center justify-between p-4 border-b border-neutral-200 dark:border-neutral-700">
                 <SidebarTrigger />
