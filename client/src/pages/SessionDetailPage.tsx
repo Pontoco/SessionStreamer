@@ -135,7 +135,7 @@ function LogPane(props: LogPaneProps): JSX.Element {
           }
         }
       }
-      
+
       if (foundIndex === null && logs.length > 0 && logs[0].timestamp && logs[0].timestamp.getTime() > currentAbsoluteTime.getTime()) {
         setTargetLogIndexToScroll(null);
       } else {
@@ -170,19 +170,17 @@ function LogPane(props: LogPaneProps): JSX.Element {
           placeholder={props.rawLogContent() === null && !props.isLoading() ? "Log file could not be loaded or is empty." : "No logs to display."}
         />
       </div>
-       <Show when={!props.isLoading() && props.rawLogContent() === null && props.sessionMetadata()?.log_url}>
-         <p class="mt-2 text-sm text-neutral-500">Log file specified but could not be loaded.</p>
-       </Show>
+      <Show when={!props.isLoading() && props.rawLogContent() === null && props.sessionMetadata()?.log_url}>
+        <p class="mt-2 text-sm text-neutral-500">Log file specified but could not be loaded.</p>
+      </Show>
     </div>
   );
 }
 
-interface VideoPaneProps {
+function VideoPane(props: {
   src: Accessor<string | undefined>;
   ref: (el: HTMLVideoElement) => void;
-}
-
-function VideoPane(props: VideoPaneProps): JSX.Element {
+}): JSX.Element {
   return (
     <section class="space-y-3">
       <h2 class="text-heading-3">Video</h2>
@@ -195,11 +193,9 @@ function VideoPane(props: VideoPaneProps): JSX.Element {
   );
 }
 
-interface MetadataPaneProps {
+function MetadataPane(props: {
   metadata: Accessor<SessionMetadata | null | undefined>;
-}
-
-function MetadataPane(props: MetadataPaneProps): JSX.Element {
+}): JSX.Element {
   return (
     <section class="space-y-3">
       <h2 class="text-heading-3">Metadata</h2>
@@ -247,18 +243,18 @@ export default function SessionDetailPage(): JSX.Element {
               <MetadataPane metadata={() => sessionData()!.metadata} />
             </div>
             <div class="flex flex-col min-h-0">
-               <LogPane
-                  rawLogContent={rawLogContent}
-                  sessionMetadata={() => sessionData()!.metadata}
-                  videoRef={getVideoRef}
-                  filterText={filterText}
-                  setFilterText={setFilterText}
-                  showTimestamps={showTimestamps}
-                  setShowTimestamps={setShowTimestamps}
-                  scrollWithVideo={scrollWithVideo}
-                  setScrollWithVideo={setScrollWithVideo}
-                  isLoading={() => rawLogContent.loading}
-                />
+              <LogPane
+                rawLogContent={rawLogContent}
+                sessionMetadata={() => sessionData()!.metadata}
+                videoRef={getVideoRef}
+                filterText={filterText}
+                setFilterText={setFilterText}
+                showTimestamps={showTimestamps}
+                setShowTimestamps={setShowTimestamps}
+                scrollWithVideo={scrollWithVideo}
+                setScrollWithVideo={setScrollWithVideo}
+                isLoading={() => rawLogContent.loading}
+              />
             </div>
           </div>
         </main>
