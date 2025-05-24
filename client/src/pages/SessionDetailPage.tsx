@@ -2,6 +2,8 @@ import { useParams, A } from '@solidjs/router';
 import { createSignal, createMemo, onCleanup, createEffect, Show, type JSX, type Accessor, type Setter, For } from 'solid-js';
 import { useSession, type SessionData, type SessionMetadata } from '../hooks/useSession';
 import { useAllSessions, type SessionListEntry } from '../hooks/useSessionList';
+import { Icon } from 'solid-heroicons';
+import { queueList } from 'solid-heroicons/solid';
 import { Loading } from '../components/common/Loading';
 import { NotFound } from '../components/common/NotFound';
 import { SolidLogViewer, type LogEntry } from '../components/common/SolidLogViewer';
@@ -231,7 +233,7 @@ function MetadataPane(props: {
                 if (value === null || value === undefined) {
                   displayValue = "N/A";
                 } else if (typeof value === 'object') {
-                  displayValue = Array.isArray(value) ? "[Array]" : "[Object]";
+                  displayValue = JSON.stringify(value);
                 } else if (typeof value === 'function') {
                   displayValue = "[Function]";
                 } else {
@@ -368,7 +370,7 @@ export default function SessionDetailPage(): JSX.Element {
                 <Breadcrumb>
                   <BreadcrumbList>
                     <BreadcrumbItem>
-                      <BreadcrumbLink as={A} href="/">
+                      <BreadcrumbLink as={A} href="/" class="flex items-center gap-1.5">
                         Sessions
                       </BreadcrumbLink>
                     </BreadcrumbItem>

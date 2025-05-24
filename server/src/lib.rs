@@ -27,7 +27,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
-use tower_http::services::ServeDir;
+use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace;
 use tracing::{Instrument, Level, Span, debug, error, info};
 use tracing::{trace, warn};
@@ -142,7 +142,11 @@ pub fn create_server(data_path: impl Into<PathBuf>, client_files: impl Into<Path
         .nest_service("/data", ServeDir::new(data_path)) // Serve the static data from the sessions.
         .route("/whip", post(whip_post_handler)) // Serve the WHIP Api
         .nest("/rest", rest::routes()) // Serve the REST Api
-        .fallback(get_service(ServeDir::new(client_path))) // Serve the client assets by default.
+        .fallback(get_service(
+            ServeDir::new(&client_path).fallback(
+                get_service(ServeFile::new(client_path.join("index.html")))
+            )
+        ))
         .layer(
             trace::TraceLayer::new_for_http()
                 .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
