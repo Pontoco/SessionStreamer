@@ -172,7 +172,7 @@ function LogPane(props: LogPaneProps): JSX.Element {
         scrollWithVideo={props.scrollWithVideo}
         setScrollWithVideo={props.setScrollWithVideo}
       />
-      <div class="flex-grow min-h-0">
+      <div class="flex-grow">
         <SolidLogViewer
           class="h-full"
           logs={processedLogs}
@@ -197,7 +197,7 @@ function VideoPane(props: {
     <section class="space-y-3">
       <h2 class="text-heading-3">Video</h2>
       <Show when={props.src()} fallback={<p>Loading video...</p>}>
-        <video ref={props.ref} controls src={props.src()} class="rounded w-full bg-black" style="max-height: 60vh;">
+        <video ref={props.ref} controls src={props.src()} class="rounded  bg-black" style="max-height: 60vh;">
           Your browser does not support the video tag.
         </video>
       </Show>
@@ -212,11 +212,33 @@ function MetadataPane(props: {
     <section class="space-y-3">
       <h2 class="text-heading-3">Metadata</h2>
       <Show when={props.metadata()} fallback={<p>Loading metadata...</p>}>
-        {(meta) => (
-          <pre class="p-4 bg-neutral-100 dark:bg-neutral-800 rounded-md overflow-x-auto text-sm border border-neutral-200 dark:border-neutral-700">
-            {JSON.stringify(meta(), null, 2)}
-          </pre>
-        )}
+        {(meta) => {
+          const currentMeta = meta();
+          if (!currentMeta) return <p>No metadata available.</p>;
+
+          return (
+            <dl class="text-xs text-neutral-700 dark:text-neutral-300 space-y-1 p-2 bg-neutral-100 dark:bg-neutral-800 rounded-md border border-neutral-200 dark:border-neutral-700">
+              {Object.entries(currentMeta).map(([key, value]) => {
+                let displayValue: string;
+                if (value === null || value === undefined) {
+                  displayValue = "N/A";
+                } else if (typeof value === 'object') {
+                  displayValue = Array.isArray(value) ? "[Array]" : "[Object]";
+                } else if (typeof value === 'function') {
+                  displayValue = "[Function]";
+                } else {
+                  displayValue = String(value);
+                }
+                return (
+                  <div class="flex">
+                    <dt class="font-medium w-1/3 truncate pr-2">{key.replace(/_/g, ' ').replace(/\b\w/g, l => l.toUpperCase())}:</dt>
+                    <dd class="w-2/3 truncate">{displayValue}</dd>
+                  </div>
+                );
+              })}
+            </dl>
+          );
+        }}
       </Show>
     </section>
   );
@@ -281,12 +303,12 @@ export default function SessionDetailPage(): JSX.Element {
                 <h1 class="text-heading-2">Session: {sessionData()!.metadata.session_id}</h1>
               </div>
               <div class="p-6 flex-grow flex flex-col bg-neutral-50 dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200">
-                <div class="flex-grow grid lg:grid-cols-[1fr_minmax(0,_2fr)] gap-6 overflow-hidden">
-                  <div class="flex flex-col gap-6 overflow-y-auto p-1">
+                <div class="flex-grow grid lg:grid-cols-2 gap-6 overflow-hidden">
+                  <div class="flex flex-grow flex-col gap-6 overflow-y-auto p-1">
                     <VideoPane src={() => sessionData()!.video_url} ref={setVideoRef} />
                     <MetadataPane metadata={() => sessionData()!.metadata} />
                   </div>
-                  <div class="flex flex-col min-h-0">
+                  <div class="flex flex-grow flex-col">
                     <LogPane
                       rawLogContent={rawLogContent}
                       sessionMetadata={() => sessionData()!.metadata}
