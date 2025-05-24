@@ -1,5 +1,4 @@
 import { createSignal, createEffect, onCleanup, For, Show, createMemo, Accessor, JSX, ComponentProps, splitProps } from 'solid-js';
-import { createVirtualizer, VirtualItem } from '@tanstack/solid-virtual';
 import { cn } from '../../solid_ui/utils';
 
 // Define the structure for a log entry
@@ -14,7 +13,6 @@ interface LogViewerProps extends ComponentProps<'div'> {
   logs: Accessor<LogEntry[]>; // Logs should be passed as an accessor (signal/prop)
   isLoading: Accessor<boolean>;
   showTimestamps?: Accessor<boolean>; // Prop to control timestamp visibility
-  defaultItemHeight?: number; // For virtualizer
   containerHeight?: string; // e.g., "600px"
   placeholder?: string; // Placeholder when logs are empty
   targetLogIndex?: Accessor<number | undefined | null>; // For programmatic scrolling
@@ -24,11 +22,9 @@ export function SolidLogViewer(props: LogViewerProps) {
   const [local, others] = splitProps(props, ["class"])
   const [isSearchActive, setIsSearchActive] = createSignal(false);
   const [searchTerm, setSearchTerm] = createSignal('');
-  let parentRef: HTMLDivElement | undefined = undefined;
   let searchInputRef: HTMLInputElement | undefined;
 
   const defaultShowTimestamps = () => props.showTimestamps !== undefined ? props.showTimestamps() : true;
-  const itemHeight = () => props.defaultItemHeight || 22; // Estimated height of a single log line
   const placeholderMessage = () => props.placeholder || 'No logs to display.';
 
   const filteredLogs = createMemo(() => {
@@ -39,44 +35,17 @@ export function SolidLogViewer(props: LogViewerProps) {
     return props.logs().filter((log: LogEntry) => log.message.toLowerCase().includes(term));
   });
 
-  const initialVirtualizerOptions = {
-    getScrollElement: () => parentRef ?? null,
-    estimateSize: (_index: number) => itemHeight(),
-    overscan: 100,
-    // `count` will be part of the reactive updates
-    // `scrollToFn`, `observeElementRect`, `observeElementOffset` will use defaults
-    // or need to be explicitly set if defaults are not sufficient or if they are required by setOptions.
-    // For now, let's assume they are handled by the library if not specified in the initial object for createVirtualizer
-    // and that setOptions needs a *complete* set if it's replacing.
-    // The error implies setOptions needs a *complete* set if it's replacing.
-  };
-
-  const rowVirtualizer = createVirtualizer<HTMLDivElement, Element>({
-    ...initialVirtualizerOptions,
-    count: filteredLogs().length, // Initial count
-  });
-
-  createEffect(() => {
-    rowVirtualizer.setOptions({
-      ...rowVirtualizer.options, // Spread the current options from the instance
-      count: filteredLogs().length, // Override the count
-    });
-    // After updating options, especially the count, we might need to tell the virtualizer to re-measure.
-    if (parentRef && filteredLogs().length > 0) {
-      rowVirtualizer.measure();
-    }
-  });
-
   createEffect(() => {
     const targetIndex = props.targetLogIndex ? props.targetLogIndex() : null;
+    // Ensure targetIndex is a number and within the bounds of filteredLogs
     if (typeof targetIndex === 'number' && targetIndex >= 0 && targetIndex < filteredLogs().length) {
-      // Check if rowVirtualizer is initialized and has items
-      if (rowVirtualizer && rowVirtualizer.getVirtualItems().length > 0) {
-        // A short delay can sometimes help ensure the DOM is ready for scrolling, especially after data changes.
-        setTimeout(() => {
-          rowVirtualizer.scrollToIndex(targetIndex, { align: 'start', behavior: 'smooth' });
-        }, 0);
-      }
+      // Use a timeout to ensure the DOM has rendered the new items before trying to scroll
+      setTimeout(() => {
+        const element = document.getElementById(`log-entry-${targetIndex}`);
+        if (element) {
+          element.scrollIntoView({ behavior: 'smooth', block: 'start' });
+        }
+      }, 0);
     }
   });
 
@@ -159,7 +128,7 @@ export function SolidLogViewer(props: LogViewerProps) {
       <div class="flex-grow overflow-y-scroll" style="contain: size; contain-intrinsic-size: 50px">
         <For each={filteredLogs()}>
           {(log: LogEntry, index) => (
-            <div>
+            <div id={"log-entry-" + index()}>
               <Show when={defaultShowTimestamps() && log?.timestamp}>
                 <span class="mr-2.5 text-gray-500 whitespace-nowrap">
                   {log ? formatTimestamp(log!.timestamp!) : ''}
