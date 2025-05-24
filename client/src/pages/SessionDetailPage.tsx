@@ -363,7 +363,8 @@ export default function SessionDetailPage(): JSX.Element {
               currentSessionId={() => params.session_id}
             />
             <SidebarInset class="flex-grow flex flex-col overflow-auto">
-              <div class="flex items-center justify-between p-4 border-b border-neutral-200 dark:border-neutral-700">
+              <div class="flex items-center justify-start gap-4 p-4 border-b border-neutral-200 dark:border-neutral-700">
+                <SidebarTrigger />
                 <Breadcrumb>
                   <BreadcrumbList>
                     <BreadcrumbItem>
@@ -383,7 +384,6 @@ export default function SessionDetailPage(): JSX.Element {
                     </BreadcrumbItem>
                   </BreadcrumbList>
                 </Breadcrumb>
-                <SidebarTrigger />
               </div>
               <div class="p-6 flex-grow flex flex-col bg-neutral-50 dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200">
                 <div class="flex-grow grid lg:grid-cols-2 gap-6 overflow-hidden">
