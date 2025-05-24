@@ -1,0 +1,157 @@
+<style>
+    .big-elem {
+        background: repeating-linear-gradient(45deg,
+                #606dbc,
+                #606dbc 10px,
+                #465298 10px,
+                #465298 20px);
+    }
+
+    /* Minimal Reset Example */
+    *,
+    *::before,
+    *::after {
+        box-sizing: border-box;
+    }
+
+    body,
+    h1,
+    h2,
+    h3,
+    h4,
+    p,
+    figure,
+    blockquote {
+        margin: 0;
+    }
+</style>
+
+<!-- Works. Min-width set on the flex-box row child. -->
+<!-- <div style="display:flex; flex-direction:row; height: 500px;">
+    <div style="background-color: blue">left</div>
+    <div style="display: flex; flex-direction:column; min-width: 0">
+        <div style="overflow: scroll; padding: 15px">
+            <div style="width: 5000px; height: 1000px" class="big-elem">right</div>
+        </div>
+    </div>
+</div> -->
+
+<!-- Does not work. -->
+<!-- <div style="display:flex; flex-direction:row; height: 500px;">
+    <div style="background-color: blue">left</div>
+    <div style="">
+        <div style="overflow: scroll; padding: 15px">
+            <div style="width: 5000px; height: 1000px" class="big-elem">right</div>
+        </div>
+    </div>
+</div> -->
+
+<!-- Works. Min-width set on the block row child. -->
+<!-- <div style="display:flex; flex-direction:row; height: 500px;">
+    <div style="background-color: blue">left</div>
+    <div style="min-width: 0;">
+        <div style="overflow: scroll; padding: 15px">
+            <div style="width: 5000px; height: 1000px" class="big-elem">right</div>
+        </div>
+    </div>
+</div> -->
+
+<!-- Works! No min-width needed on block row child??? -->
+<!-- <div style="display:flex; flex-direction:row; height: 500px;">
+    <div style="background-color: blue">left</div>
+    <div style="overflow: scroll; padding: 15px">
+        <div style="width: 5000px; height: 1000px" class="big-elem">right</div>
+    </div>
+</div> -->
+
+<!-- Does not work. (it has no scrolling) -->
+<!-- Because the big div is now a flex child, which is allowed to shrink with flex-shrink: 1 (default). -->
+<!-- <div style="display:flex; flex-direction:row; height: 500px;">
+    <div style="background-color: blue">left</div>
+    <div style="display: flex; overflow: scroll; padding: 15px">
+        <div style="width: 5000px; height: 1000px" class="big-elem">right</div>
+    </div>
+</div> -->
+
+<!-- Works! The right child is not a flex container, so it lays out like normal. -->
+<!-- <div style="display:flex; flex-direction:row; height: 500px;">
+    <div style="background-color: blue">left</div>
+    <div style="overflow: scroll; padding: 15px">
+        <div style="width: 5000px; height: 1000px" class="big-elem">right</div>
+    </div>
+</div> -->
+
+<!-- Does not work. The 'main' child is now a flex child whose content-width is 5000px.-->
+<!-- <div style="display:flex; width:100vw; height:500px">
+    <div id="main" style="display:flex; flex-grow: 1; flex-direction:row">
+        <div style="background-color: blue">left</div>
+        <div style="overflow: scroll; padding: 15px">
+            <div style="width: 5000px; height: 1000px" class="big-elem">right</div>
+        </div>
+    </div>
+</div> -->
+
+<!-- Works! By using a different flex direction on the parent, 
+ the wrapper no longer uses flex-box for its width layout of children.-->
+<!-- <div style="display:flex; flex-direction: column; width:100vw; height:500px">
+    <div id="main" style="display:flex; flex-grow: 1; flex-direction:row">
+        <div style="background-color: blue">left</div>
+        <div style="overflow: scroll; padding: 15px">
+            <div style="width: 5000px; height: 1000px" class="big-elem">right</div>
+        </div>
+    </div>
+</div> -->
+
+<!-- Making closer to original: -->
+<!-- <div style="display:flex; flex-direction: column; width:100vw; height:500px">
+    <div style="flex-grow: 1">header</div>
+    <div id="main" style="display:flex; flex-grow: 1; flex-direction:row; min-height: 0;">
+        <div style="background-color: blue">left</div>
+        <div style="display: flex; flex-direction: column; background-color: gray; min-width: 0;">
+            <div>right</div>
+            <div style="overflow: scroll; padding: 15px;">
+                <div style="width: 5000px; height: 1000px" class="big-elem">right</div>
+            </div>
+        </div>
+    </div>
+</div> -->
+
+<!-- <div style="display:flex; flex-direction:column; width:100vw; height:500px;">
+    <div style="flex-grow: 1;">header</div>
+    <div id="main" style="display:flex; flex-grow: 1; flex-direction: row; min-height:0;">
+        <div style="background:blue;">left</div>
+        <div style="display:flex; flex-direction:column; background:gray; min-width:0;">
+            <div>right header</div>
+            <div style="overflow:scroll; padding:15px; min-width: 0;">
+                <div class="big-elem" style="width:5000px; height:1000px;">big-elem</div>
+            </div>
+        </div>
+    </div>
+</div> -->
+
+<!-- <div style="display:flex; flex-direction: row; width:100vw; height:500px; border: solid 5px">
+    <div id="main" style="display:flex; flex-grow: 1; flex-direction:row; min-width: 0">
+        <div id="main" style="display:flex; flex-grow: 1; flex-direction:column; min-width: 0;">
+            <div id="main" style="display:flex; flex-grow: 1; flex-direction:row;">
+                <div style="overflow: scroll; padding: 15px;">
+                    <div style="width: 5000px; height: 400px" class="big-elem">right</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div> -->
+
+<!-- Ok, so we need a min-width style for every *child* of a flex-boxes above the scroll 
+ container that flex in the same direction. -->
+
+<div style="display:flex; flex-direction: row; width:100vw; height:500px; border: solid 5px">
+    <div id="main" style="display:flex; flex-grow: 1; flex-direction:row;">
+        <div id="main" style="display:flex; flex-grow: 1; flex-direction:column;">
+            <div id="main" style="display:flex; flex-grow: 1; flex-direction:row; contain: size">
+                <div style="overflow: scroll; padding: 15px;">
+                    <div style="width: 5000px; height: 400px" class="big-elem">right</div>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>

@@ -1,43 +1,67 @@
 @import url('https://fonts.googleapis.com/css2?family=Inter:ital,opsz,wght@0,14..32,100..900;1,14..32,100..900&display=swap');
 
+/* NOTE: We ended up just placing this along with contain-intrinsic-size on each offending scroll container.*/
+/* This CSS Reset adds the 'contain: size' style to all scroll containers. This has the effect
+* of giving them (and all parents) a min-width: 0 and min-height: 0 during flexbox sizing calculations. 
+* This avoids the 'large children within scrolling context exploding out a flexbox layout' as described
+* in CSSWG https://github.com/w3c/csswg-drafts/issues/1865.
+*
+* This is a patch fix until something like 'min-intrinsic-sizing: zero-if-scroll' ships. 
+* (Currently in draft as of 2025 June). For now this is much better than adding 'min-width: 0' throughout
+* the entire layout chain.
+*/
+/* .overflow-scroll,
+.overflow-x-scroll,
+.overflow-y-scroll {
+    contain: size;
+} */
+
 @import 'tailwindcss';
 
 @config "../tailwind.config.js";
 
-@theme {
-    /* new v4 theme stuff goes here */
-}
+@theme {}
 
 @layer base {
+
+    html {
+        /* @apply h-full; */
+    }
+
+    html,
+    body,
+    #root {
+        @apply flex flex-col flex-grow;
+    }
+
+    div {
+        /* @apply flex flex-col; */
+    }
 
     body {
         @apply bg-default-background text-default-font font-body antialiased;
     }
 
     a {
-        /* Using a slightly more subtle link style inspired by Linear's typical interface links */
-        @apply text-brand-700 hover:text-brand-600 hover:underline;
-        /* For more prominent call-to-action links, specific classes can be used. */
+        @apply text-neutral-800 hover:text-neutral-900 hover:underline;
     }
 
     h1 {
-        @apply text-heading-1; /* Defined in tailwind.config.js */
+        @apply text-heading-1;
     }
 
     h2 {
-        @apply text-heading-2; /* Defined in tailwind.config.js */
+        @apply text-heading-2;
     }
 
     h3 {
-        @apply text-heading-3; /* Defined in tailwind.config.js */
+        @apply text-heading-3;
     }
 
-    /* Add other global base styles as needed */
-    /* For example, ensuring form elements have some base styling if not using solid-ui components everywhere initially */
     input,
     textarea,
     select,
     button {
-        @apply font-body; /* Ensure form elements also use the Inter font by default */
+        @apply font-body;
     }
 }

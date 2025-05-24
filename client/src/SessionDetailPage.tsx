@@ -2,6 +2,7 @@ import { useParams } from '@solidjs/router';
 import { createResource, Show, createSignal, createMemo, onCleanup, createEffect } from 'solid-js';
 import type { JSX } from 'solid-js';
 import { SolidLogViewer, type LogEntry } from './SolidLogViewer';
+import Flex from './Flex';
 
 interface SessionMetadata {
   session_id: string;
@@ -68,7 +69,7 @@ export default function SessionDetailPage(): JSX.Element {
         allLogs.push({
           id: i,
           timestamp: new Date(match[1]),
-          message: match[2] || '', // Ensure message is not undefined
+          message: match[2] || '',
         });
       } else {
         allLogs.push({
@@ -91,16 +92,12 @@ export default function SessionDetailPage(): JSX.Element {
     console.log("Video Element:", videoElement);
 
     if (!videoElement || !sData || !sData.metadata.timestamp || !scrollWithVideo()) {
-      // If not scrolling with video, or necessary data/refs are missing, do nothing.
-      // Or remove listener if it was previously attached and scrollWithVideo is now false.
-      if (videoElement && videoElement.onplay) { // Check if a handler was attached
-        // How to properly remove specific handler if we don't store it?
-        // For now, this effect reruns and won't add if scrollWithVideo is false.
+      if (videoElement && videoElement.onplay) {
       }
       return;
     }
 
-    const baseTimestampStr = sData.metadata.timestamp as string; // Already confirmed it's a string
+    const baseTimestampStr = sData.metadata.timestamp as string;
     let baseTimeMs: number;
     try {
       baseTimeMs = Date.parse(baseTimestampStr);
@@ -117,7 +114,7 @@ export default function SessionDetailPage(): JSX.Element {
       if (!videoElement) return;
       const currentVideoTimeMs = videoElement.currentTime * 1000;
       const currentAbsoluteTime = new Date(baseTimeMs + currentVideoTimeMs);
-      
+
       const logs = processedLogs();
       if (!logs.length) {
         setTargetLogIndexToScroll(null);
@@ -125,7 +122,6 @@ export default function SessionDetailPage(): JSX.Element {
       }
 
       let foundIndex: number | null = null;
-      // Iterate backwards to find the last log entry at or before the current video time
       for (let i = logs.length - 1; i >= 0; i--) {
         const log = logs[i];
         if (log.timestamp && log.timestamp instanceof Date && !isNaN(log.timestamp.getTime())) {
@@ -135,13 +131,9 @@ export default function SessionDetailPage(): JSX.Element {
           }
         }
       }
-      
-      // If no log is at or before, but video has started, maybe scroll to first if it's later?
-      // Or if all logs are before current time, scroll to last.
+
       if (foundIndex === null && logs.length > 0 && logs[0].timestamp && logs[0].timestamp.getTime() > currentAbsoluteTime.getTime()) {
-        // Video time is before the first log with a timestamp
-        // setTargetLogIndexToScroll(0); // Option: scroll to first log
-        setTargetLogIndexToScroll(null); // Option: don't scroll yet
+        setTargetLogIndexToScroll(null);
       } else {
         setTargetLogIndexToScroll(foundIndex);
       }
@@ -154,75 +146,90 @@ export default function SessionDetailPage(): JSX.Element {
   });
 
   createEffect(() => {
-    console.log("url::"+ sessionData()?.video_url);
+    console.log("url::" + sessionData()?.video_url);
   });
 
+  // return (
+  //   <div class="flex flex-col" style="height: 100vh; width: 100vw;">
+  //     <div class="flex flex-row flex-grow">
+  //       <div class="" style="background-color:blue">left</div>
+  //       <div class="" id="log_holder" style="background-color:white; padding: 15px; overflow:scroll;">
+  //         <div style="height: 15000px; width: 5000px; background-color:red"></div>
+  //       </div>
+  //     </div>
+  //   </div>
+  // );
+
   return (
-    <div class="p-5">
+    <div id="page" class="flex flex-col" style="height: 100vh; width: 100vw;">
       <Show when={sessionData.loading}>
-        <p>Loading session details...</p>
+        <p class="text-neutral-500 px-6 sm:px-8 py-6 sm:py-8">Loading session details...</p>
       </Show>
       <Show when={!sessionData.loading && sessionData()}>
         {(data) => (
-          <div>
-            <h1 class="text-2xl bg-brand-500 font-bold mb-4">Session: {data().metadata.session_id}</h1>
-            <div class="flex flex-wrap gap-5">
-              <div class="flex-1 basis-[600px] min-w-[300px]">
-                <h2 class="text-xl font-semibold mb-2">Video</h2>
-                <video ref={videoRef} controls width="100%" src={data().video_url}>
+          <div id="content" class="flex flex-col flex-grow">
+            <h1 class="text-heading-2">Session: {data().metadata.session_id}</h1>
+
+            <div id="two-columns" class="flex flex-grow flex-row">
+              <div id="left" class="flex-grow">
+                <h2 class="text-heading-3 mb-4">Video</h2>
+                <video ref={videoRef} controls width="100%" src={data().video_url} class="rounded">
                   Your browser does not support the video tag.
                 </video>
+
+                <div class="mt-6 bg-white shadow-lg rounded-lg p-6 sm:p-8">
+                  <h2 class="text-heading-3 mb-4">Metadata</h2>
+                  <pre class="p-4 bg-neutral-50 rounded-md overflow-x-auto text-sm">
+                    {JSON.stringify(data().metadata, null, 2)}
+                  </pre>
+                </div>
               </div>
-              <div class="flex-1 basis-[400px] min-w-[300px]">
-                <h2 class="text-xl font-semibold mb-2">Unity Log</h2>
-                <div class="flex flex-col gap-2.5 mb-2.5">
-                  <div class="flex items-center flex-wrap gap-2.5"> {/* Added flex-wrap */}
+              <div id="right" class="flex flex-col flex-grow">
+                <h2 class="text-heading-3 mb-4">Unity Log</h2>
+                  <div class="flex flex-wrap gap-2.5">
                     <input
                       type="text"
                       placeholder="Filter logs..."
                       value={filterText()}
                       onInput={(e) => setFilterText(e.currentTarget.value)}
-                      class="p-2 rounded border border-gray-300 w-[300px]"
+                      class="block w-full sm:w-[300px] rounded-md border-neutral-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 sm:text-sm p-2"
                     />
-                    <label class="flex items-center gap-[5px] cursor-pointer select-none">
+                    <label class="flex items-center gap-2 text-sm text-neutral-700 cursor-pointer select-none">
                       <input
                         type="checkbox"
                         checked={showTimestamps()}
                         onChange={(e) => setShowTimestamps(e.currentTarget.checked)}
+                        class="rounded border-neutral-300 text-brand-600 shadow-sm focus:ring-brand-500"
                       />
                       Show Timestamps
                     </label>
-                    <label class="flex items-center gap-[5px] cursor-pointer select-none">
+                    <label class="flex items-center gap-2 text-sm text-neutral-700 cursor-pointer select-none">
                       <input
                         type="checkbox"
                         checked={scrollWithVideo()}
                         onChange={(e) => setScrollWithVideo(e.currentTarget.checked)}
+                        class="rounded border-neutral-300 text-brand-600 shadow-sm focus:ring-brand-500"
                       />
                       Scroll With Video
                     </label>
                   </div>
-                </div>
                 <SolidLogViewer
+                  class="flex-grow"
                   logs={processedLogs}
                   isLoading={() => rawLogContent.loading}
-                  containerHeight="500px"
                   showTimestamps={showTimestamps}
                   targetLogIndex={targetLogIndexToScroll}
                 />
-                 <Show when={!rawLogContent.loading && rawLogContent() === undefined && sessionData()?.log_url}>
-                    <p>Log file specified but could not be loaded.</p>
-                 </Show>
+                <Show when={!rawLogContent.loading && rawLogContent() === undefined && sessionData()?.log_url}>
+                  <p class="mt-2 text-sm text-neutral-500">Log file specified but could not be loaded.</p> {/* Added some margin and styling */}
+                </Show>
               </div>
             </div>
-            <h2 class="text-xl font-semibold mt-7 mb-2">Metadata</h2>
-            <pre class="border border-gray-300 p-2.5 bg-gray-50 rounded overflow-x-auto">
-              {JSON.stringify(data().metadata, null, 2)}
-            </pre>
           </div>
         )}
       </Show>
       <Show when={!sessionData.loading && !sessionData()}>
-        <p>Session not found or failed to load.</p>
+        <p class="text-neutral-500 px-6 sm:px-8 py-6 sm:py-8">Session not found or failed to load.</p>
       </Show>
     </div>
   );

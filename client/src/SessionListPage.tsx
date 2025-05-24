@@ -18,9 +18,9 @@ import { A } from '@solidjs/router';
 
 interface SessionMetadata {
     session_id: string;
-    timestamp: string; // Added for RFC3339 timestamp
-    formattedTimestamp?: string; // Added for human-readable version, optional
-    username?: string; // Added for clarity, though [key: string] would cover it
+    timestamp: string;
+    formattedTimestamp?: string;
+    username?: string;
     [key: string]: any;
 }
 
@@ -43,7 +43,6 @@ export default function SessionListPage(): JSX.Element {
     const [sorting, setSorting] = createSignal<SortingState>([]);
     const [columnFilters, setColumnFilters] = createSignal<ColumnFiltersState>([]);
 
-    // Helper function to format RFC3339 timestamp to a human-readable string
     function formatTimestamp(rfc3339Timestamp?: string): string {
         if (!rfc3339Timestamp) return '';
         try {
@@ -61,18 +60,16 @@ export default function SessionListPage(): JSX.Element {
         const s = sessions();
         if (!s || s.length === 0) return [];
 
-        return [...s] // Create a shallow copy before sorting
+        return [...s]
             .sort((a, b) => {
-                // Sort descending (newest first)
                 if (!a.timestamp && !b.timestamp) return 0;
-                if (!a.timestamp) return 1; // b comes first
-                if (!b.timestamp) return -1; // a comes first
+                if (!a.timestamp) return 1;
+                if (!b.timestamp) return -1;
 
                 return b.timestamp.localeCompare(a.timestamp);
             })
             .map(session => ({
                 ...session,
-                // Add the formatted timestamp
                 formattedTimestamp: formatTimestamp(session.timestamp)
             }));
     });
@@ -120,23 +117,22 @@ export default function SessionListPage(): JSX.Element {
         getCoreRowModel: getCoreRowModel(),
         getSortedRowModel: getSortedRowModel(),
         getFilteredRowModel: getFilteredRowModel(),
-        // debugTable: true, // Uncomment for debugging
     });
 
     return (
-        <div class="p-6 sm:p-8 max-w-full mx-auto"> {/* Adjusted padding and constrained width */}
-            <h1 class="text-heading-2 mb-6">Session List</h1> {/* Use heading style and adjust margin */}
-            <Show when={!sessions.loading} fallback={<p class="text-neutral-500">Loading sessions...</p>}>
-                <Show when={sessions() && sessions()!.length > 0} fallback={<p class="text-neutral-500">No sessions found.</p>}>
-                    <div class="overflow-x-auto"> {/* Added for responsiveness on small screens */}
-                        <table class="min-w-full divide-y divide-neutral-200"> {/* Removed outer border, added divide for rows */}
-                            <thead class="bg-neutral-50"> {/* Thead background */}
+        <div class="max-w-7xl mx-auto">
+            <h1 class="text-heading-2 mb-6 px-6 sm:px-8 pt-6 sm:pt-8">Session List</h1>
+            <Show when={!sessions.loading} fallback={<p class="text-neutral-500 px-6 sm:px-8 py-6 sm:py-8">Loading sessions...</p>}>
+                <Show when={sessions() && sessions()!.length > 0} fallback={<p class="text-neutral-500 px-6 sm:px-8 py-6 sm:py-8">No sessions found.</p>}>
+                    <div class="overflow-x-auto bg-white shadow-lg rounded-lg p-6 sm:p-8">
+                        <table class="min-w-full divide-y divide-neutral-200">
+                            <thead class="">
                                 <For each={table.getHeaderGroups()}>
                                     {headerGroup => (
                                         <tr>
                                             <For each={headerGroup.headers}>
                                                 {header => (
-                                                    <th scope="col" class="px-4 py-3 text-left text-xs font-medium text-neutral-500 uppercase tracking-wider border-b-2 border-neutral-200">
+                                                    <th scope="col" class="px-6 py-3 text-left text-xs font-semibold text-neutral-600 uppercase tracking-wider border-b border-neutral-200">
                                                         <div
                                                             class={`flex items-center gap-1 ${header.column.getCanSort() ? 'cursor-pointer select-none' : 'select-none'}`}
                                                             onClick={header.column.getToggleSortingHandler()}
@@ -144,20 +140,20 @@ export default function SessionListPage(): JSX.Element {
                                                             {flexRender(header.column.columnDef.header, header.getContext())}
                                                             <span class="text-neutral-400">
                                                             {{
-                                                                asc: '↑', // Simpler sort indicators
+                                                                asc: '↑',
                                                                 desc: '↓',
                                                             }[header.column.getIsSorted() as string] ?? ''}
                                                             </span>
                                                         </div>
                                                         {header.column.getCanFilter() ? (
-                                                            <div class="mt-1.5"> {/* Adjusted margin */}
+                                                            <div class="mt-1.5">
                                                                 <input
                                                                     type="text"
                                                                     value={(header.column.getFilterValue() ?? '') as string}
                                                                     onInput={e => header.column.setFilterValue(e.currentTarget.value)}
                                                                     placeholder={`Filter...`}
                                                                     class="block w-full rounded-md border-neutral-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 sm:text-xs p-1.5"
-                                                                    onClick={e => e.stopPropagation()} // Prevent sort when clicking filter input
+                                                                    onClick={e => e.stopPropagation()}
                                                                 />
                                                             </div>
                                                         ) : null}
@@ -168,13 +164,13 @@ export default function SessionListPage(): JSX.Element {
                                     )}
                                 </For>
                             </thead>
-                            <tbody class="bg-white divide-y divide-neutral-100"> {/* Body background and row divide */}
+                            <tbody class="divide-y divide-neutral-200">
                                 <For each={table.getRowModel().rows}>
                                     {row => (
-                                        <tr class="hover:bg-neutral-50 transition-colors"> {/* Added hover effect */}
+                                        <tr class="hover:bg-neutral-100 transition-colors">
                                             <For each={row.getVisibleCells()}>
                                                 {cell => (
-                                                    <td class="px-4 py-3 whitespace-nowrap text-sm text-neutral-700">
+                                                    <td class="px-6 py-4 whitespace-nowrap text-sm text-neutral-800">
                                                         {flexRender(cell.column.columnDef.cell, cell.getContext())}
                                                     </td>
                                                 )}

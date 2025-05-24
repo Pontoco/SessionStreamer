@@ -1,5 +1,6 @@
-import { createSignal, createEffect, onCleanup, For, Show, createMemo, Accessor, JSX } from 'solid-js';
+import { createSignal, createEffect, onCleanup, For, Show, createMemo, Accessor, JSX, ComponentProps, splitProps } from 'solid-js';
 import { createVirtualizer, VirtualItem } from '@tanstack/solid-virtual';
+import { cn } from './solid_ui/utils';
 
 // Define the structure for a log entry
 export interface LogEntry {
@@ -9,7 +10,7 @@ export interface LogEntry {
   level?: 'INFO' | 'WARN' | 'ERROR' | 'DEBUG'; // Optional: for styling
 }
 
-interface LogViewerProps {
+interface LogViewerProps extends ComponentProps<'div'> {
   logs: Accessor<LogEntry[]>; // Logs should be passed as an accessor (signal/prop)
   isLoading: Accessor<boolean>;
   showTimestamps?: Accessor<boolean>; // Prop to control timestamp visibility
@@ -20,6 +21,7 @@ interface LogViewerProps {
 }
 
 export function SolidLogViewer(props: LogViewerProps) {
+  const [local, others] = splitProps(props, ["class"])
   const [isSearchActive, setIsSearchActive] = createSignal(false);
   const [searchTerm, setSearchTerm] = createSignal('');
   let parentRef: HTMLDivElement | undefined = undefined;
@@ -27,7 +29,6 @@ export function SolidLogViewer(props: LogViewerProps) {
 
   const defaultShowTimestamps = () => props.showTimestamps !== undefined ? props.showTimestamps() : true;
   const itemHeight = () => props.defaultItemHeight || 22; // Estimated height of a single log line
-  const containerHeight = () => props.containerHeight || '500px';
   const placeholderMessage = () => props.placeholder || 'No logs to display.';
 
   // Filter logs based on search term
@@ -76,7 +77,7 @@ export function SolidLogViewer(props: LogViewerProps) {
     if (typeof targetIndex === 'number' && targetIndex >= 0 && targetIndex < filteredLogs().length) {
       // Check if rowVirtualizer is initialized and has items
       if (rowVirtualizer && rowVirtualizer.getVirtualItems().length > 0) {
-         // A short delay can sometimes help ensure the DOM is ready for scrolling, especially after data changes.
+        // A short delay can sometimes help ensure the DOM is ready for scrolling, especially after data changes.
         setTimeout(() => {
           rowVirtualizer.scrollToIndex(targetIndex, { align: 'start', behavior: 'smooth' });
         }, 0);
@@ -133,7 +134,8 @@ export function SolidLogViewer(props: LogViewerProps) {
   };
 
   return (
-    <div class="border border-gray-300 rounded font-mono text-sm">
+
+    <div class={cn("flex flex-col border border-gray-300 font-mono text-sm", props.class)} {...others}>
       <Show when={isSearchActive()}>
         <div class="flex p-2 border-b border-gray-200">
           <input
@@ -160,18 +162,36 @@ export function SolidLogViewer(props: LogViewerProps) {
         </div>
       </Show>
 
-      <Show when={props.isLoading()} fallback={
+      <div class="flex-grow overflow-y-scroll" style="contain: size; contain-intrinsic-size: 50px">
+        <For each={filteredLogs()}>
+          {(log: LogEntry, index) => (
+            <div>
+              <Show when={defaultShowTimestamps() && log?.timestamp}>
+                <span class="mr-2.5 text-gray-500 whitespace-nowrap">
+                  {log ? formatTimestamp(log!.timestamp!) : ''}
+                </span>
+              </Show>
+              <span class="flex-grow whitespace-nowrap">
+                {log ? highlightMatch(log!.message, searchTerm()) : ''}
+              </span>
+            </div>
+          )}
+        </For>
+        test
+      </div>
+
+
+      {/* <Show when={props.isLoading()} fallback={
         <div
           ref={parentRef}
-          class="relative" // Added relative for consistency, though inner div has it for items
-          style={{ height: containerHeight(), overflow: 'auto' }}
+          class="flex-grow min-h-0 overflow-auto" // Added relative for consistency, though inner div has it for items
         >
           <Show when={filteredLogs().length > 0} fallback={
-             <div class="flex justify-center items-center h-full text-gray-600 font-sans">
+             <div class="justify-center items-center h-full text-gray-600 font-sans">
                {searchTerm() ? 'No matching logs.' : placeholderMessage()}
              </div>
           }>
-            <div
+            <div // The main div that is the size of the log lines.
               style={{ // These styles are essential for the virtualizer's calculations
                 height: `${rowVirtualizer.getTotalSize()}px`,
                 width: '100%',
@@ -180,7 +200,7 @@ export function SolidLogViewer(props: LogViewerProps) {
             >
               <For each={rowVirtualizer.getVirtualItems()}>
                 {(virtualRow: VirtualItem) => {
-                  const log = createMemo(() => filteredLogs()[virtualRow.index]);
+                  const log = filteredLogs()[virtualRow.index];
                   return (
                     <div
                       class="px-2 flex items-start hover:bg-gray-50 box-border"
@@ -194,13 +214,13 @@ export function SolidLogViewer(props: LogViewerProps) {
                       }}
                       data-index={virtualRow.index}
                     >
-                      <Show when={defaultShowTimestamps() && log()?.timestamp}>
+                      <Show when={defaultShowTimestamps() && log?.timestamp}>
                         <span class="mr-2.5 text-gray-500 whitespace-nowrap">
-                          {log() ? formatTimestamp(log()!.timestamp!) : ''}
+                          {log ? formatTimestamp(log!.timestamp!) : ''}
                         </span>
                       </Show>
-                      <span class="flex-grow whitespace-nowrap"> {/* Consider overflow-hidden text-ellipsis if lines are too long */}
-                        {log() ? highlightMatch(log()!.message, searchTerm()) : ''}
+                      <span class="flex-grow whitespace-nowrap"> 
+                        {log ? highlightMatch(log!.message, searchTerm()) : ''}
                       </span>
                     </div>
                   );
@@ -210,10 +230,10 @@ export function SolidLogViewer(props: LogViewerProps) {
           </Show>
         </div>
       }>
-        <div class="flex justify-center items-center text-gray-600 font-sans" style={{ height: containerHeight() }}>
+        <div class="flex justify-center items-center text-gray-600 font-sans" >
           Loading logs...
         </div>
-      </Show>
+      </Show> */}
     </div>
   );
 }
