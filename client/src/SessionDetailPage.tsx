@@ -89,7 +89,6 @@ export default function SessionDetailPage(): JSX.Element {
   createEffect(() => {
     const sData = sessionData();
     const videoElement = videoRef;
-    console.log("Video Element:", videoElement);
 
     if (!videoElement || !sData || !sData.metadata.timestamp || !scrollWithVideo()) {
       if (videoElement && videoElement.onplay) {
@@ -145,21 +144,6 @@ export default function SessionDetailPage(): JSX.Element {
     });
   });
 
-  createEffect(() => {
-    console.log("url::" + sessionData()?.video_url);
-  });
-
-  // return (
-  //   <div class="flex flex-col" style="height: 100vh; width: 100vw;">
-  //     <div class="flex flex-row flex-grow">
-  //       <div class="" style="background-color:blue">left</div>
-  //       <div class="" id="log_holder" style="background-color:white; padding: 15px; overflow:scroll;">
-  //         <div style="height: 15000px; width: 5000px; background-color:red"></div>
-  //       </div>
-  //     </div>
-  //   </div>
-  // );
-
   return (
     <div id="page" class="flex flex-col" style="height: 100vh; width: 100vw;">
       <Show when={sessionData.loading}>
@@ -169,66 +153,9 @@ export default function SessionDetailPage(): JSX.Element {
         {(data) => (
           <div id="content" class="flex flex-col flex-grow">
             <h1 class="text-heading-2">Session: {data().metadata.session_id}</h1>
-
             <div id="two-columns" class="flex flex-grow flex-row" >
-              <div id="left" style="min-width: 0; flex: 1 1 0;">
-                <h2 class="text-heading-3 mb-4">Video</h2>
-                <video ref={videoRef} controls src={data().video_url} class="rounded" style="min-width: 0;">
-                  Your browser does not support the video tag.
-                </video>
-
-                <div class="mt-6 bg-white shadow-lg rounded-lg p-6 sm:p-8">
-                  <h2 class="text-heading-3 mb-4">Metadata</h2>
-                  <pre class="p-4 bg-neutral-50 rounded-md overflow-x-auto text-sm">
-                    {JSON.stringify(data().metadata, null, 2)}
-                  </pre>
-                </div>
-              </div>
-              <div id="right" class="flex flex-col" style="flex: 1 1 0;">
-                <h2 class="text-heading-3 mb-4">Unity Log</h2>
-                  <div class="flex flex-wrap gap-2.5">
-
-                    <input
-                      type="text"
-                      placeholder="Filter logs..."
-                      value={filterText()}
-                      onInput={(e) => setFilterText(e.currentTarget.value)}
-                      class="block w-full sm:w-[300px] rounded-md border-neutral-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 sm:text-sm p-2"
-                    />
-
-                    <label class="flex items-center gap-2 text-sm text-neutral-700 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={showTimestamps()}
-                        onChange={(e) => setShowTimestamps(e.currentTarget.checked)}
-                        class="rounded border-neutral-300 text-brand-600 shadow-sm focus:ring-brand-500"
-                      />
-                      Show Timestamps
-                    </label>
-
-                    <label class="flex items-center gap-2 text-sm text-neutral-700 cursor-pointer select-none">
-                      <input
-                        type="checkbox"
-                        checked={scrollWithVideo()}
-                        onChange={(e) => setScrollWithVideo(e.currentTarget.checked)}
-                        class="rounded border-neutral-300 text-brand-600 shadow-sm focus:ring-brand-500"
-                      />
-                      Scroll With Video
-                    </label>
-                  </div>
-
-                <SolidLogViewer
-                  class="flex-grow"
-                  logs={processedLogs}
-                  isLoading={() => rawLogContent.loading}
-                  showTimestamps={showTimestamps}
-                  targetLogIndex={targetLogIndexToScroll}
-                />
-
-                <Show when={!rawLogContent.loading && rawLogContent() === undefined && sessionData()?.log_url}>
-                  <p class="mt-2 text-sm text-neutral-500">Log file specified but could not be loaded.</p> {/* Added some margin and styling */}
-                </Show>
-              </div>
+              {VideoPane(videoRef, data)}
+              {LogPane(filterText, setFilterText, showTimestamps, setShowTimestamps, scrollWithVideo, setScrollWithVideo, processedLogs, rawLogContent, targetLogIndexToScroll, sessionData)}
             </div>
           </div>
         )}
@@ -238,4 +165,63 @@ export default function SessionDetailPage(): JSX.Element {
       </Show>
     </div>
   );
+}
+
+function LogPane(filterText, setFilterText, showTimestamps, setShowTimestamps, scrollWithVideo, setScrollWithVideo, processedLogs, rawLogContent, targetLogIndexToScroll, sessionData) {
+  return <div id="right" class="flex flex-col" style="flex: 1 1 0;">
+    <h2 class="text-heading-3 mb-4">Unity Log</h2>
+    <div class="flex flex-wrap gap-2.5">
+
+      <input
+        type="text"
+        placeholder="Filter logs..."
+        value={filterText()}
+        onInput={(e) => setFilterText(e.currentTarget.value)}
+        class="block w-full sm:w-[300px] rounded-md border-neutral-300 shadow-sm focus:border-brand-500 focus:ring-brand-500 sm:text-sm p-2" />
+
+      <label class="flex items-center gap-2 text-sm text-neutral-700 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={showTimestamps()}
+          onChange={(e) => setShowTimestamps(e.currentTarget.checked)}
+          class="rounded border-neutral-300 text-brand-600 shadow-sm focus:ring-brand-500" />
+        Show Timestamps
+      </label>
+
+      <label class="flex items-center gap-2 text-sm text-neutral-700 cursor-pointer select-none">
+        <input
+          type="checkbox"
+          checked={scrollWithVideo()}
+          onChange={(e) => setScrollWithVideo(e.currentTarget.checked)}
+          class="rounded border-neutral-300 text-brand-600 shadow-sm focus:ring-brand-500" />
+        Scroll With Video
+      </label>
+    </div>
+
+    <SolidLogViewer
+      class="flex-grow"
+      logs={processedLogs}
+      isLoading={() => rawLogContent.loading}
+      showTimestamps={showTimestamps}
+      targetLogIndex={targetLogIndexToScroll} />
+
+    <Show when={!rawLogContent.loading && rawLogContent() === undefined && sessionData()?.log_url}>
+      <p class="mt-2 text-sm text-neutral-500">Log file specified but could not be loaded.</p> {/* Added some margin and styling */}
+    </Show>
+  </div>;
+}
+
+function VideoPane(videoRef: HTMLVideoElement, data) {
+  return <div id="left" class="flex flex-col gap-3" style="min-width: 0; flex: 1 1 0">
+    <h2 class="text-heading-3">Video</h2>
+    <video ref={videoRef} controls src={data().video_url} class="rounded" style="min-width: 0;">
+      Your browser does not support the video tag.
+    </video>
+    <div>
+      <h2 class="text-heading-3">Metadata</h2>
+      <pre class="p-4 m-3 bg-neutral-200 rounded-md overflow-x-auto text-sm">
+        {JSON.stringify(data().metadata, null, 2)}
+      </pre>
+    </div>
+  </div>;
 }
