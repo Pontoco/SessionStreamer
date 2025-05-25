@@ -340,8 +340,7 @@ function SessionDetailSidebar(props: SessionDetailSidebarProps): JSX.Element {
 
 export default function SessionDetailPage(): JSX.Element {
   const params = useParams();
-  const [searchParams] = useSearchParams();
-  const { sessionData, rawLogContent } = useSession(() => params.session_id, () => searchParams.project_id as string);
+  const { sessionData, rawLogContent } = useSession(() => params.session_id, () => params.project_id as string);
 
   const [showTimestamps, setShowTimestamps] = createSignal(false);
   const [scrollWithVideo, setScrollWithVideo] = createSignal(true);
@@ -367,7 +366,7 @@ export default function SessionDetailPage(): JSX.Element {
           <div class="flex h-screen">
             <SessionDetailSidebar
               currentSessionMetadata={() => sessionData()?.metadata}
-              currentProjectId={() => searchParams.project_id as string}
+              currentProjectId={() => params.project_id as string}
             />
             <SidebarInset class="flex-grow flex flex-col overflow-auto">
               <div class="flex items-center justify-start gap-4 p-4 border-b border-neutral-200 dark:border-neutral-700">
@@ -375,7 +374,7 @@ export default function SessionDetailPage(): JSX.Element {
                 <Breadcrumb>
                   <BreadcrumbList>
                     <BreadcrumbItem>
-                      <BreadcrumbLink as={A} href="/" class="flex items-center gap-1.5">
+                      <BreadcrumbLink as={A} href={`/sessions/${params.project_id}`} class="flex items-center gap-1.5">
                         Sessions
                       </BreadcrumbLink>
                     </BreadcrumbItem>

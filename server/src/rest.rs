@@ -14,7 +14,7 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
-use tracing::{error, warn};
+use tracing::{debug, error, warn};
 
 use crate::path_ext::PathExt;
 use crate::AppState;
@@ -86,14 +86,15 @@ pub async fn get_session_info(
         .map_err(|_| RestError::new(StatusCode::BAD_REQUEST, "session_id invalid"))?
         .join("metadata.json");
 
+    debug!("Loading session: [{metadata_path:?}]");
     let metadata_file = match File::open(metadata_path) {
         Ok(file) => file,
-        Err(_) => return Err(RestError::new(StatusCode::BAD_REQUEST, "session does not exist")),
+        Err(_) => return Err(RestError::new(StatusCode::BAD_REQUEST, format!("session does not exist: [{}]", query.session_id))),
     };
 
     let metadata: Value = serde_json::from_reader(metadata_file)?;
-    let video_url = format!("/data/{}/game_capture_0.mp4", query.session_id);
-    let log_url = format!("/data/{}/data_unity_log.txt", query.session_id);
+    let video_url = format!("/data/{}/{}/game_capture_0.mp4", query.project_id, query.session_id);
+    let log_url = format!("/data/{}/{}/data_unity_log.txt", query.project_id, query.session_id);
 
     Ok(Json(SessionData {
         metadata,

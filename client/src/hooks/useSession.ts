@@ -13,11 +13,8 @@ export interface SessionData {
   log_url: string;
 }
 
-async function fetchSessionData(sessionId: string, projectId?: string): Promise<SessionData | null> {
-  let url = `/rest/session/${sessionId}`;
-  if (projectId) {
-    url += `?project_id=${projectId}`;
-  }
+async function fetchSessionData(sessionId: string, projectId: string): Promise<SessionData | null> {
+  let url = `/rest/session?project_id=${projectId}&session_id=${sessionId}`;
   console.log(`Fetching session data from ${url}`);
   try {
     const response = await fetch(url);
@@ -51,7 +48,7 @@ async function fetchLogContent(logUrl: string): Promise<string | null> {
   }
 }
 
-export function useSession(sessionId: Accessor<string | undefined>, projectId?: Accessor<string | undefined>) {
+export function useSession(sessionId: Accessor<string | undefined>, projectId: Accessor<string | undefined>) {
   const [sessionData] = createResource(
     () => {
       const sId = sessionId();
