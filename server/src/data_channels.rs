@@ -128,7 +128,7 @@ async fn handle_generic_channel(
 
     let ext = if protocol == "timestamped_bytes" { "txt" } else { "dat" };
 
-    let file_path = state.data_path.join_safe(format!("data_{label}.{ext}"));
+    let file_path = state.data_path.join_safe(format!("data_{label}.{ext}"))?;
     let mut file_sink = match File::create(&file_path).await {
         Ok(file) => file,
         Err(err) => {

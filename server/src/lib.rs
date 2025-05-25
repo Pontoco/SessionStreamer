@@ -182,11 +182,9 @@ async fn whip_post_handler(
 ) -> Result<impl IntoResponse, AppError> {
     debug!("Received WHIP request.");
 
-    ensure_app(
-        content_type == "application/sdp".parse().unwrap(),
-        StatusCode::UNSUPPORTED_MEDIA_TYPE,
-        "Content-Type must be application/sdp.",
-    )?;
+    if content_type != "application/sdp".parse().unwrap() {
+        return Err((StatusCode::UNSUPPORTED_MEDIA_TYPE, "Content-Type must be application/sdp."))?;
+    }
 
     ensure_app(
         query_params.contains_key("session_id"),
@@ -515,7 +513,8 @@ async fn validate_track_encodings(session_state: &SessionState, answer: &Session
 
         if md_answer.media_name.port.value == 0 {
             info!(
-                "Media section for type '{}' (MID: {:?}) in the answer has port 0. This indicates it's disabled, likely due to no common codecs or explicit rejection.",
+                "Media section for type '{}' (MID: {:?}) in the answer has port 0. This indicates it's disabled,
+                 likely due to no common codecs or explicit rejection.",
                 media_type, mid_answer
             );
             session_state
@@ -526,7 +525,8 @@ async fn validate_track_encodings(session_state: &SessionState, answer: &Session
             // Another check: if it's not port 0, but has no rtpmap (codec) lines, it's also problematic for RTP-based media.
             // Data channels ("application") don't use rtpmap.
             info!(
-                "Media section for type '{}' (MID: {:?}) in the answer has no rtpmap attributes. This indicates no codecs were included for this stream.",
+                "Media section for type '{}' (MID: {:?}) in the answer has no rtpmap attributes.
+                 This indicates no codecs were included for this stream.",
                 media_type, mid_answer
             );
             session_state
