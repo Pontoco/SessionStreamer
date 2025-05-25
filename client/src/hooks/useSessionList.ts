@@ -1,9 +1,9 @@
-import { createResource } from 'solid-js';
+import { Accessor, createResource } from 'solid-js';
 import { SessionMetadata } from './useSession';
 
-async function fetchAllSessions(): Promise<SessionMetadata[]> {
+async function fetchAllSessions(project_id: string): Promise<SessionMetadata[]> {
     try {
-        const response = await fetch('/rest/list');
+        const response = await fetch('/rest/list?project_id=' + project_id);
         if (!response.ok) {
             console.error(`HTTP error! status: ${response.status} fetching /rest/list`);
             throw new Error(`HTTP error! status: ${response.status}`);
@@ -16,7 +16,12 @@ async function fetchAllSessions(): Promise<SessionMetadata[]> {
     }
 }
 
-export function useAllSessions() {
-    const [sessions] = createResource(fetchAllSessions);
+export function useAllSessions(project_id: Accessor<string>) {
+    const [sessions] = createResource(
+        project_id,
+        async (project_id) => {
+            if (!project_id) return null;
+            return fetchAllSessions(project_id);
+        });
     return sessions;
 }

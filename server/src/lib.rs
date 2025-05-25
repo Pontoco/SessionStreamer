@@ -193,11 +193,18 @@ async fn whip_post_handler(
         "Query parameter missing: [session_id]",
     )?;
 
+    ensure_app(
+        query_params.contains_key("project_id"),
+        StatusCode::BAD_REQUEST,
+        "Query parameter missing: [project_id]",
+    )?;
+
     let (client_send, client_send_rx) = tokio::sync::mpsc::channel::<ServerMessage>(100);
 
     // todo: Verify this session_id hasn't already been created. Some kind of disk file to represent it?
     let session_id = query_params["session_id"].clone();
-    let data_path = state.data_path.join(&session_id);
+    let project_id = query_params["project_id"].clone();
+    let data_path = state.data_path.join(&project_id).join(&session_id);
     if fs::try_exists(&data_path).await? {
         return Err(AppError::new(
             StatusCode::CONFLICT,
@@ -206,7 +213,7 @@ async fn whip_post_handler(
     }
     fs::create_dir(&data_path).await?;
 
-    info!("Created new game streaming session: {}", &session_id);
+    info!("Created new game streaming session. project={} session={} path={}", &project_id, &session_id, data_path.display());
 
     // todo! It's important that this gets cancelled on drop.
     // Right now we have a memory leak if we hit an error, because the spawned tasks will not be killed.

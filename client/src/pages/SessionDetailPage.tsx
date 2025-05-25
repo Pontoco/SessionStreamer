@@ -1,4 +1,4 @@
-import { useParams, A } from '@solidjs/router';
+import { useParams, A, useSearchParams } from '@solidjs/router';
 import { createSignal, createMemo, onCleanup, createEffect, Show, type JSX, type Accessor, type Setter, For } from 'solid-js';
 import { useSession, type SessionData, type SessionMetadata } from '../hooks/useSession';
 import { useAllSessions } from '../hooks/useSessionList';
@@ -262,25 +262,23 @@ function MetadataPane(props: {
 
 interface SessionDetailSidebarProps {
   currentSessionMetadata: Accessor<SessionMetadata | null | undefined>;
-  currentSessionId: Accessor<string | undefined>;
+  currentProjectId: Accessor<string | undefined>;
 }
 
 function SessionDetailSidebar(props: SessionDetailSidebarProps): JSX.Element {
-  const allSessions = useAllSessions();
+  const allSessions = useAllSessions(props.currentProjectId);
 
   const currentUsername = createMemo(() => props.currentSessionMetadata()?.username);
-  const currentId = createMemo(() => props.currentSessionId());
 
   const relatedSessions = createMemo(() => {
     const username = currentUsername();
-    const id = currentId();
     const sessions = allSessions();
 
-    if (!username || !sessions || !id) return [];
+    if (!username || !sessions) return [];
 
-    return sessions.filter(
-      (s) => s.username === username && s.session_id !== id
-    ).sort((a, b) => new Date(b.timestamp_utc).getTime() - new Date(a.timestamp_utc).getTime());
+    return sessions
+      .filter((s) => s.username === username)
+      .sort((a, b) => new Date(b.timestamp_utc).getTime() - new Date(a.timestampUtc).getTime());
   });
 
   return (
@@ -320,7 +318,7 @@ function SessionDetailSidebar(props: SessionDetailSidebarProps): JSX.Element {
                       <SidebarMenuButton class="w-full text-left">
                         <div class="flex flex-col">
                           <span class="">
-                            <b>{(i()+1)}</b>: {new Date(session.timestamp_utc).toLocaleString()}
+                            <b>{(i() + 1)}</b>: {new Date(session.timestamp_utc).toLocaleString()}
                           </span>
                           <span class="text-xs text-neutral-500 dark:text-neutral-400">ID: {session.session_id.substring(0, 8)}...</span>
                         </div>
@@ -342,7 +340,8 @@ function SessionDetailSidebar(props: SessionDetailSidebarProps): JSX.Element {
 
 export default function SessionDetailPage(): JSX.Element {
   const params = useParams();
-  const { sessionData, rawLogContent } = useSession(() => params.session_id);
+  const [searchParams] = useSearchParams();
+  const { sessionData, rawLogContent } = useSession(() => params.session_id, () => searchParams.project_id as string);
 
   const [showTimestamps, setShowTimestamps] = createSignal(false);
   const [scrollWithVideo, setScrollWithVideo] = createSignal(true);
@@ -368,7 +367,7 @@ export default function SessionDetailPage(): JSX.Element {
           <div class="flex h-screen">
             <SessionDetailSidebar
               currentSessionMetadata={() => sessionData()?.metadata}
-              currentSessionId={() => params.session_id}
+              currentProjectId={() => searchParams.project_id as string}
             />
             <SidebarInset class="flex-grow flex flex-col overflow-auto">
               <div class="flex items-center justify-start gap-4 p-4 border-b border-neutral-200 dark:border-neutral-700">

@@ -13,17 +13,21 @@ export interface SessionData {
   log_url: string;
 }
 
-async function fetchSessionData(sessionId: string): Promise<SessionData | null> {
-  console.log(`Fetching session data for ${sessionId}`);
+async function fetchSessionData(sessionId: string, projectId?: string): Promise<SessionData | null> {
+  let url = `/rest/session/${sessionId}`;
+  if (projectId) {
+    url += `?project_id=${projectId}`;
+  }
+  console.log(`Fetching session data from ${url}`);
   try {
-    const response = await fetch(`/rest/session/${sessionId}`);
+    const response = await fetch(url);
     if (!response.ok) {
-      console.error(`HTTP error! status: ${response.status} for session ${sessionId}`);
+      console.error(`HTTP error! status: ${response.status} for URL ${url}`);
       return null;
     }
     return await response.json();
   } catch (error) {
-    console.error(`Failed to fetch session data for ${sessionId}:`, error);
+    console.error(`Failed to fetch session data from ${url}:`, error);
     return null;
   }
 }
@@ -47,12 +51,18 @@ async function fetchLogContent(logUrl: string): Promise<string | null> {
   }
 }
 
-export function useSession(sessionId: Accessor<string | undefined>) {
+export function useSession(sessionId: Accessor<string | undefined>, projectId?: Accessor<string | undefined>) {
   const [sessionData] = createResource(
-    sessionId,
-    async (id) => {
-      if (!id) return null;
-      return fetchSessionData(id);
+    () => {
+      const sId = sessionId();
+      const pId = projectId ? projectId() : undefined;
+      if (!sId) return undefined; // Return undefined if sessionId is not available
+      return { sessionId: sId, projectId: pId }; // Pass as an object to re-trigger if either changes
+    },
+    async (params) => {
+      // params will be undefined if sessionId() was undefined in the source function
+      if (!params) return null;
+      return fetchSessionData(params.sessionId, params.projectId);
     }
   );
 

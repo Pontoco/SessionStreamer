@@ -3,7 +3,7 @@ import { defineConfig } from 'vite';
 import solidPlugin from 'vite-plugin-solid';
 
 // Set this flag to have our dev server proxy backend requests to the production live server.
-let use_prod_server = true;
+let use_prod_server = false;
 
 var target;
 if (use_prod_server) {
