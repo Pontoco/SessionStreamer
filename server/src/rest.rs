@@ -4,7 +4,7 @@ use std::{fs::File, panic::Location};
 
 use axum::Router;
 use axum::extract::{Path, Query};
-use axum::routing::get;
+use axum::routing::{any, get};
 use axum::{
     Json,
     extract::State,
@@ -25,6 +25,7 @@ pub fn routes() -> Router<AppState> {
     Router::new()
         .route("/session", get(get_session_info))
         .route("/list", get(get_session_list))
+        .fallback(async || StatusCode::NOT_FOUND)
 }
 
 #[derive(Serialize, Deserialize)]
