@@ -1,4 +1,5 @@
 mod data_channels;
+mod path_ext;
 mod rest;
 mod timestamped_bytes;
 mod video_track;
@@ -12,6 +13,7 @@ use axum::routing::{get, get_service, post};
 use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
 use futures::{StreamExt, TryFutureExt};
+use path_ext::PathExt;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::panic::Location;
@@ -20,6 +22,7 @@ use std::sync::Arc;
 use std::sync::atomic::AtomicI8;
 use std::sync::atomic::Ordering::SeqCst;
 use std::time::Duration;
+use thiserror::Error;
 use tokio::fs::{self, File};
 use tokio::io::AsyncWriteExt;
 use tokio::sync::mpsc::{Receiver, Sender, UnboundedSender};
@@ -143,9 +146,7 @@ pub fn create_server(data_path: impl Into<PathBuf>, client_files: impl Into<Path
         .route("/whip", post(whip_post_handler)) // Serve the WHIP Api
         .nest("/rest", rest::routes()) // Serve the REST Api
         .fallback(get_service(
-            ServeDir::new(&client_path).fallback(
-                get_service(ServeFile::new(client_path.join("index.html")))
-            )
+            ServeDir::new(&client_path).fallback(get_service(ServeFile::new(client_path.join_safe("index.html")?))),
         ))
         .layer(
             trace::TraceLayer::new_for_http()
@@ -182,7 +183,7 @@ async fn whip_post_handler(
     debug!("Received WHIP request.");
 
     ensure_app(
-        content_type == "application/sdp".parse()?,
+        content_type == "application/sdp".parse().unwrap(),
         StatusCode::UNSUPPORTED_MEDIA_TYPE,
         "Content-Type must be application/sdp.",
     )?;
@@ -204,16 +205,27 @@ async fn whip_post_handler(
     // todo: Verify this session_id hasn't already been created. Some kind of disk file to represent it?
     let session_id = query_params["session_id"].clone();
     let project_id = query_params["project_id"].clone();
-    let data_path = state.data_path.join(&project_id).join(&session_id);
+    let data_path = state
+        .data_path
+        .join_safe(&project_id)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "project_id invalid"))?
+        .join_safe(&session_id)
+        .map_err(|_| (StatusCode::BAD_REQUEST, "project_id invalid"))?;
+
     if fs::try_exists(&data_path).await? {
-        return Err(AppError::new(
+        return Err((
             StatusCode::CONFLICT,
-            anyhow!("Session ID already exists! [{}] path: [{:?}]", &session_id, &data_path),
-        ));
+            format!("Session ID already exists! [{}] path: [{:?}]", &session_id, &data_path),
+        ))?;
     }
     fs::create_dir(&data_path).await?;
 
-    info!("Created new game streaming session. project={} session={} path={}", &project_id, &session_id, data_path.display());
+    info!(
+        "Created new game streaming session. project={} session={} path={}",
+        &project_id,
+        &session_id,
+        data_path.display()
+    );
 
     // todo! It's important that this gets cancelled on drop.
     // Right now we have a memory leak if we hit an error, because the spawned tasks will not be killed.
@@ -268,13 +280,7 @@ async fn whip_post_handler(
 
     debug!("Using STUN servers: {:?}", &config.ice_servers);
 
-    let peer = StatefulPeerConnection::new(
-        state
-            .rtc
-            .new_peer_connection(config)
-            .await
-            .map_err(|e| AppError::new(StatusCode::INTERNAL_SERVER_ERROR, e.into()))?,
-    );
+    let peer = StatefulPeerConnection::new(state.rtc.new_peer_connection(config).await?);
 
     debug!("Peer Connection created.");
 
@@ -284,7 +290,8 @@ async fn whip_post_handler(
         .send(ServerMessage::Info {
             message: "Connected to general data channel!".into(),
         })
-        .await?;
+        .await
+        .map_err(|_| "Channel closed")?;
 
     // Echo state changes
     let mut state_stream = WatchStream::new(peer.state.clone());
@@ -381,12 +388,10 @@ async fn whip_post_handler(
 
     peer.on_gathering_complete().await.recv().await;
 
-    let answer = peer.local_description().await.ok_or_else(|| {
-        AppError::new(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            anyhow::anyhow!("Local description did not get set properly."),
-        )
-    })?;
+    let answer = peer
+        .local_description()
+        .await
+        .ok_or("Local description did not get set properly.")?;
 
     trace!("Sending answer: {}", &answer.sdp);
 
@@ -626,36 +631,53 @@ fn supported_codecs() -> Vec<RTCRtpCodecParameters> {
 // Error handling
 // -----
 
-struct AppError(StatusCode, anyhow::Error);
-impl AppError {
-    fn new(status_code: StatusCode, err: anyhow::Error) -> Self {
-        match status_code {
-            StatusCode::INTERNAL_SERVER_ERROR => error!("Responding with Internal Server Error: {}", err.to_string()),
-            _ => info!("Responding with error: {}", err.to_string()),
-        };
-        AppError(status_code, err)
+#[derive(Error, Debug)]
+enum AppError {
+    #[error("{}", 1)]
+    Manual(StatusCode, String),
+    #[error("webrtc error")]
+    WebRtc(#[from] webrtc::Error),
+    #[error("io error")]
+    Io(#[from] std::io::Error),
+    #[error("http error")]
+    Http(#[from] axum::http::Error),
+    #[error("serde error")]
+    Serde(#[from] serde_json::Error),
+}
+
+impl<T> From<(StatusCode, T)> for AppError
+where
+    T: Into<String>,
+{
+    fn from((status_code, err): (StatusCode, T)) -> Self {
+        AppError::Manual(status_code, err.into())
     }
 }
 
-impl<T> From<T> for AppError
-where
-    T: std::error::Error + Send + Sync + 'static,
-{
-    fn from(err: T) -> Self {
-        error!("Responding with Internal Server Error: {}", err);
-        AppError(StatusCode::INTERNAL_SERVER_ERROR, anyhow::Error::msg(err.to_string()))
+impl From<String> for AppError {
+    fn from(msg: String) -> Self {
+        AppError::Manual(StatusCode::INTERNAL_SERVER_ERROR, msg)
+    }
+}
+
+impl From<&str> for AppError {
+    fn from(msg: &str) -> Self {
+        AppError::Manual(StatusCode::INTERNAL_SERVER_ERROR, msg.to_string())
     }
 }
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
-        (self.0, self.1.to_string()).into_response()
+        match self {
+            AppError::Manual(status_code, msg) => (status_code, msg).into_response(),
+            e => (StatusCode::INTERNAL_SERVER_ERROR, format!("Internal Server Error: {}", e)).into_response(),
+        }
     }
 }
 
 fn ensure_app(condition: bool, status_code: StatusCode, msg: &'static str) -> Result<(), AppError> {
     if !condition {
-        return Err(AppError(status_code, anyhow::anyhow!(msg)));
+        return Err((status_code, msg))?;
     }
     Ok(())
 }

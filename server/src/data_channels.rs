@@ -5,7 +5,7 @@ use tokio_util::sync::CancellationToken;
 use tracing::{Instrument, Span, debug, error, info, trace};
 
 use crate::{
-    ClientMessage, LineTrackingError, SessionState, timestamped_bytes::TimestampedUtf8Depacketizer, webrtc_utils::StatefulDataChannel,
+    path_ext::PathExt, timestamped_bytes::TimestampedUtf8Depacketizer, webrtc_utils::StatefulDataChannel, ClientMessage, LineTrackingError, SessionState
 };
 
 pub async fn handle_data_channel(
@@ -128,7 +128,7 @@ async fn handle_generic_channel(
 
     let ext = if protocol == "timestamped_bytes" { "txt" } else { "dat" };
 
-    let file_path = state.data_path.join(format!("data_{label}.{ext}"));
+    let file_path = state.data_path.join_safe(format!("data_{label}.{ext}"));
     let mut file_sink = match File::create(&file_path).await {
         Ok(file) => file,
         Err(err) => {
