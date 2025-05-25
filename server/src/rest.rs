@@ -13,6 +13,7 @@ use axum::{
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
+use thiserror::Error;
 use tracing::{error, warn};
 
 use crate::AppState;
@@ -26,7 +27,7 @@ pub fn routes() -> Router<AppState> {
 }
 
 #[derive(Serialize, Deserialize)]
-struct ListQuery {
+pub struct ListQuery {
     pub project_id: String,
 }
 
@@ -40,7 +41,7 @@ pub async fn get_session_list(
     let project_path = &app_state
         .data_path
         .join_safe(query.project_id)
-        .ok_or_else(|| RestError::new(StatusCode::BAD_REQUEST, "project_id not valid"))?;
+        .map_err(|_| RestError::new(StatusCode::BAD_REQUEST, "project_id not valid"))?;
 
     for entry in fs::read_dir(&project_path)? {
         let session_path = entry?.path();
@@ -64,7 +65,7 @@ pub async fn get_session_list(
 }
 
 #[derive(Serialize, Deserialize)]
-struct SessionInfoQuery {
+pub struct SessionInfoQuery {
     pub session_id: String,
     pub project_id: String,
 }
@@ -78,9 +79,9 @@ pub async fn get_session_info(
     let metadata_path = app_state
         .data_path
         .join_safe(&query.project_id)
-        .ok_or(RestError::new(StatusCode::BAD_REQUEST, "project_id invalid"))?
+        .map_err(|_| RestError::new(StatusCode::BAD_REQUEST, "project_id invalid"))?
         .join_safe(&query.session_id)
-        .ok_or(RestError::new(StatusCode::BAD_REQUEST, "session_id invalid"))?
+        .map_err(|_| RestError::new(StatusCode::BAD_REQUEST, "session_id invalid"))?
         .join("metadata.json");
 
     let metadata_file = match File::open(metadata_path) {
@@ -144,9 +145,15 @@ impl IntoResponse for RestError {
 }
 
 trait PathExt {
-    fn join_safe<P>(&self, relative: P) -> Option<PathBuf>
+    fn join_safe<P>(&self, relative: P) -> Result<PathBuf, SafeJoinErr>
     where
         P: AsRef<std::path::Path>;
+}
+
+#[derive(Error, Debug)]
+pub enum SafeJoinErr {
+    #[error("joined directory must only contain simple components (no .., etc)")]
+    DirContainsInvalidComponents
 }
 
 impl<P> PathExt for P
@@ -155,20 +162,17 @@ where
 {
     // to prevent directory traversal attacks we ensure the path consists of exactly one normal
     // component
-    fn join_safe<P2>(&self, relative: P2) -> Option<PathBuf>
+    fn join_safe<P2>(&self, relative: P2) -> Result<PathBuf, SafeJoinErr>
     where
         P2: AsRef<std::path::Path>,
     {
-        let p = path::absolute(self.as_ref().join(relative)).ok()?;
-
-        let mut components = p.components().peekable();
-
+        let mut components = relative.as_ref().components().peekable();
         if let Some(first) = components.peek() {
-            if !matches!(first, std::path::Component::Normal(_)) || components.count() != 1 {
-                return None;
+            if !matches!(first, std::path::Component::Normal(_)) {
+                return Err(SafeJoinErr::DirContainsInvalidComponents);
             }
         }
 
-        Some(p)
+        Ok(self.as_ref().join(relative))
     }
 }
