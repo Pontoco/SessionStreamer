@@ -1,6 +1,6 @@
 import type { Component } from 'solid-js';
 
-import { createResource, For, Show, createMemo, createSignal } from 'solid-js';
+import { createResource, For, Show, createMemo, createSignal, onMount } from 'solid-js';
 import {
     createSolidTable,
     getCoreRowModel,
@@ -17,6 +17,7 @@ import type { JSX } from 'solid-js';
 import { A, useParams, useSearchParams } from '@solidjs/router';
 import { useAllSessions } from './hooks/useSessionList';
 import { SessionMetadata } from './hooks/useSession';
+import { authState } from './auth/AuthGuard';
 
 export default function SessionListPage(): JSX.Element {
     const params = useParams();
@@ -102,9 +103,9 @@ export default function SessionListPage(): JSX.Element {
         getSortedRowModel: getSortedRowModel(),
         getFilteredRowModel: getFilteredRowModel(),
     });
-
     return (
         <main class="flex-grow flex flex-col bg-neutral-50 dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 min-h-screen">
+            {JSON.stringify(authState)}
             <Show
                 when={projectId() && projectId()!.trim() !== ""}
                 fallback={

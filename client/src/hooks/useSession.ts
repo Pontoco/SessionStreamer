@@ -1,4 +1,5 @@
 import { createResource, type Accessor } from 'solid-js';
+import { auth_headers } from '../auth/AuthGuard';
 
 export interface SessionMetadata {
   session_id: string;
@@ -17,7 +18,7 @@ async function fetchSessionData(sessionId: string, projectId: string): Promise<S
   let url = `/rest/session?project_id=${projectId}&session_id=${sessionId}`;
   console.log(`Fetching session data from ${url}`);
   try {
-    const response = await fetch(url);
+    const response = await fetch(url, { ...auth_headers });
     if (!response.ok) {
       console.error(`HTTP error! status: ${response.status} for URL ${url}`);
       return null;
