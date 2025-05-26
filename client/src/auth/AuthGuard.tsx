@@ -5,6 +5,7 @@ import { createStore, produce } from "solid-js/store";
 import { jwtDecode, JwtPayload } from "jwt-decode";
 
 const TOKEN_KEY = "jwt_token_local"
+const OAUTH_REDIRECT_PATH_KEY = "oauth_redirect_path";
 
 export const [authState, setAuthState] = createStore({
     isAuthenticated: false,
@@ -37,6 +38,7 @@ export function AuthGuard(props: ParentProps): JSX.Element {
         if (token) {
             setIsAuthenticated(true);
         } else {
+            sessionStorage.setItem(OAUTH_REDIRECT_PATH_KEY, location.pathname + location.search + location.hash);
             // If no token, redirect to login
             console.log(`No token found, redirecting to login: ${new Date()}`);
             login();
@@ -122,7 +124,10 @@ export function OAuthCallbackPage() {
             clearToken();
         }
 
-        navigate('/', { replace: true });
+        const originalPath = sessionStorage.getItem(OAUTH_REDIRECT_PATH_KEY);
+        sessionStorage.removeItem(OAUTH_REDIRECT_PATH_KEY); // Clean up
+        // Navigate to the original path or a default if none was stored
+        navigate(originalPath || '/', { replace: true });
     });
 
     return <div>Processing login...</div>;
