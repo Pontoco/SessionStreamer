@@ -6,6 +6,7 @@ mod video_track;
 mod webrtc_utils;
 
 use anyhow::{Result, anyhow};
+use axum::error_handling::HandleErrorLayer;
 use axum::extract::{Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{IntoResponse, Response};
@@ -116,7 +117,7 @@ where
     }
 }
 
-pub fn create_server(data_path: impl Into<PathBuf>, client_files: impl Into<PathBuf>) -> Result<axum::Router> {
+pub async fn create_server(data_path: impl Into<PathBuf>, client_files: impl Into<PathBuf>) -> Result<axum::Router> {
     let mut m = MediaEngine::default();
 
     // We use a default media engine, but we only support H264 codecs.
@@ -144,7 +145,7 @@ pub fn create_server(data_path: impl Into<PathBuf>, client_files: impl Into<Path
     Ok(axum::Router::new()
         .nest_service("/data", ServeDir::new(data_path)) // Serve the static data from the sessions.
         .route("/whip", post(whip_post_handler)) // Serve the WHIP Api
-        .nest("/rest", rest::routes()) // Serve the REST Api
+        .nest("/rest", rest::routes().await) // Serve the REST Api
         .fallback(get_service(
             ServeDir::new(&client_path).fallback(get_service(ServeFile::new(client_path.join_safe("index.html")?))),
         ))

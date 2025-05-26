@@ -33,8 +33,8 @@ export function AuthGuard(props: ParentProps): JSX.Element {
         setIsAuthenticated(false);
 
         const token = loadToken();
+        console.log(`token found`);
         if (token) {
-            setIsAuthenticated(true);
             setIsAuthenticated(true);
         } else {
             // If no token, redirect to login

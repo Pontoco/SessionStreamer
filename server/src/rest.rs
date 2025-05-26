@@ -2,7 +2,7 @@ use std::path::PathBuf;
 use std::{fs, path};
 use std::{fs::File, panic::Location};
 
-use axum::Router;
+use axum::{Extension, Router};
 use axum::extract::{Path, Query};
 use axum::routing::{any, get};
 use axum::{
@@ -14,17 +14,34 @@ use axum::{
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use thiserror::Error;
-use tracing::{debug, error, warn};
+use tokio::net::TcpListener;
+use tower::ServiceBuilder;
+use tower_oauth2_resource_server::server::OAuth2ResourceServer;
+use tower_oauth2_resource_server::tenant::TenantConfiguration;
+use tracing::{debug, error, info, warn};
 
-use crate::path_ext::PathExt;
 use crate::AppState;
+use crate::path_ext::PathExt;
 
 type SessionMetadata = serde_json::Value;
 
-pub fn routes() -> Router<AppState> {
+pub async fn routes() -> Router<AppState> {
+    let oauth2_resource_server = OAuth2ResourceServer::<UserEmailClaim>::builder()
+        .add_tenant(
+            TenantConfiguration::builder(format!("https://accounts.google.com"))
+            .audiences(&["250832464539-0m471qro1qad8108jel2kqu3dbcaldii.apps.googleusercontent.com"])
+            .build()
+            .await
+            .expect("Failed to build tenant configuration"),
+        )
+        .build()
+        .await
+        .expect("Failed to build OAuth2 resource server");
+
     Router::new()
         .route("/session", get(get_session_info))
         .route("/list", get(get_session_list))
+        .layer(ServiceBuilder::new().layer(oauth2_resource_server.into_layer()))
         .fallback(async || StatusCode::NOT_FOUND)
 }
 
@@ -33,12 +50,21 @@ pub struct ListQuery {
     pub project_id: String,
 }
 
+/// Custom claims extractor to get only what you need, including email.
+#[derive(Debug, Deserialize, Clone)]
+struct UserEmailClaim {
+    email: String,
+}
+
 /// Gets a list of all sessions under this project. Returns each session's metadata json object.
 pub async fn get_session_list(
     State(app_state): State<AppState>,
     Query(query): Query<ListQuery>,
+    claims: Extension<UserEmailClaim>
 ) -> Result<Json<Vec<SessionMetadata>>, RestError> {
     let mut metadata_list = Vec::new();
+
+    info!("Got email! [{}]", claims.email);
 
     let project_path = &app_state
         .data_path
@@ -89,7 +115,12 @@ pub async fn get_session_info(
     debug!("Loading session: [{metadata_path:?}]");
     let metadata_file = match File::open(metadata_path) {
         Ok(file) => file,
-        Err(_) => return Err(RestError::new(StatusCode::BAD_REQUEST, format!("session does not exist: [{}]", query.session_id))),
+        Err(_) => {
+            return Err(RestError::new(
+                StatusCode::BAD_REQUEST,
+                format!("session does not exist: [{}]", query.session_id),
+            ));
+        }
     };
 
     let metadata: Value = serde_json::from_reader(metadata_file)?;
