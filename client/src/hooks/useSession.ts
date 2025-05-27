@@ -14,11 +14,11 @@ export interface SessionData {
   log_url: string;
 }
 
-async function fetchSessionData(sessionId: string, projectId: string): Promise<SessionData | null> {
+async function fetchSessionData(sessionId: string, projectId: string, headers: {}): Promise<SessionData | null> {
   let url = `/rest/session?project_id=${projectId}&session_id=${sessionId}`;
   console.log(`Fetching session data from ${url}`);
   try {
-    const response = await fetch(url, { ...auth_headers });
+    const response = await fetch(url, { headers });
     if (!response.ok) {
       console.error(`HTTP error! status: ${response.status} for URL ${url}`);
       return null;
@@ -30,14 +30,14 @@ async function fetchSessionData(sessionId: string, projectId: string): Promise<S
   }
 }
 
-async function fetchLogContent(logUrl: string): Promise<string | null> {
+async function fetchLogContent(logUrl: string, headers: {}): Promise<string | null> {
   if (!logUrl) {
     console.warn("fetchLogContent called with no logUrl");
     return null;
   }
   console.log(`Fetching log content from ${logUrl}`);
   try {
-    const response = await fetch(logUrl);
+    const response = await fetch(logUrl, { headers });
     if (!response.ok) {
       console.error(`HTTP error! status: ${response.status} for log ${logUrl}`);
       return null;
@@ -55,12 +55,12 @@ export function useSession(sessionId: Accessor<string | undefined>, projectId: A
       const sId = sessionId();
       const pId = projectId ? projectId() : undefined;
       if (!sId) return undefined; // Return undefined if sessionId is not available
-      return { sessionId: sId, projectId: pId }; // Pass as an object to re-trigger if either changes
+      return { sessionId: sId, projectId: pId, headers: auth_headers() }; // Pass as an object to re-trigger if either changes
     },
     async (params) => {
       // params will be undefined if sessionId() was undefined in the source function
       if (!params) return null;
-      return fetchSessionData(params.sessionId, params.projectId);
+      return fetchSessionData(params.sessionId, params.projectId, params.headers);
     }
   );
 
@@ -69,13 +69,13 @@ export function useSession(sessionId: Accessor<string | undefined>, projectId: A
       const data = sessionData();
       // Only fetch if sessionData is loaded and has a log_url
       if (data && data.log_url) {
-        return data.log_url;
+        return { url: data.log_url, headers: auth_headers() };
       }
       return undefined; // Important: return undefined if not ready to fetch
     },
-    async (url) => {
+    async (params) => {
       // fetchLogContent will only be called if url is a string (due to createResource behavior with undefined key)
-      return fetchLogContent(url);
+      return fetchLogContent(params.url, params.headers);
     }
   );
 

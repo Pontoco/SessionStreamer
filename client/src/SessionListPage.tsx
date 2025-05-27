@@ -105,7 +105,6 @@ export default function SessionListPage(): JSX.Element {
     });
     return (
         <main class="flex-grow flex flex-col bg-neutral-50 dark:bg-neutral-900 text-neutral-800 dark:text-neutral-200 min-h-screen">
-            {JSON.stringify(authState)}
             <Show
                 when={projectId() && projectId()!.trim() !== ""}
                 fallback={
