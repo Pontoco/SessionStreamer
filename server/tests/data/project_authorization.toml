@@ -1,0 +1,4 @@
+[infernal]
+authorized_emails = [
+    "*@pontoco.com"
+]

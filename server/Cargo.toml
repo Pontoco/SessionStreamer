@@ -30,6 +30,9 @@ chrono = "0.4.41"
 thiserror = "2.0.12"
 tower-oauth2-resource-server = "0.4.1"
 tower = "0.5.2"
+serde_toml = "0.0.1"
+toml = "0.8.22"
+globset = "0.4.16"
 
 [dev-dependencies]
 axum-test = "17.3.0"

@@ -31,6 +31,7 @@ use tokio::sync::{Mutex, mpsc};
 use tokio::time::sleep;
 use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
+use toml::Table;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace;
 use tracing::{Instrument, Level, Span, debug, error, info};
@@ -56,7 +57,7 @@ struct AppState {
     pub rtc: Arc<webrtc::api::API>,
 
     // The path on disk to store streamed data from game sessions.
-    pub data_path: PathBuf,
+    data_path: PathBuf,
 }
 
 #[derive(Clone)]
@@ -69,6 +70,32 @@ struct SessionState {
     pub messages_sink: UnboundedSender<String>, // Used to write Client and Server messages to disk as a text file.
     pub track_id: Arc<AtomicI8>,               // Incrementing track id for each connected video track.
     pub offered_video_tracks: Vec<MediaDescription>, // The set of media tracks the client sent in its offer. We expect to see each of them connect.
+}
+
+impl AppState {
+    /// Retrieves the project folder path, or None if this user does not have access.
+    pub async fn authorize_project_folder(&self, project_id: &str, email: &str) -> Result<PathBuf, LineTrackingError> {
+        let auth_rules_txt = fs::read_to_string(self.data_path.join("project_authorization.toml")).await?;
+        let rules: Table = auth_rules_txt.parse::<toml::Table>().map_err(|_| AuthError::RuleMalformed)?;
+
+        let rule = rules.get(project_id).ok_or(AuthError::NoRuleForProject)?;
+
+        let email_patterns = rule
+            .get("authorized_emails")
+            .and_then(|e| e.as_array())
+            .ok_or(AuthError::RuleMalformed)?;
+
+        for pattern in email_patterns {
+            let glob = globset::Glob::new(pattern.as_str().ok_or(AuthError::RuleMalformed)?)?
+                .compile_matcher();
+            if glob.is_match(email) {
+                return Ok(self.data_path.join_safe(project_id)?);
+            }
+        }
+
+        debug!("User did not pass email auth rules check");
+        Err(AuthError::NotAuthorized)?
+    }
 }
 
 /// Sent from the server to control or inform the client.
@@ -157,6 +184,18 @@ pub async fn create_server(data_path: impl Into<PathBuf>, client_files: impl Int
         .with_state(state))
 }
 
+#[derive(Error, Debug)]
+enum AuthError {
+    #[error("Can't load rules file")]
+    CantLoadRules,
+    #[error("No rule for given project")]
+    NoRuleForProject,
+    #[error("Rules file was malformed")]
+    RuleMalformed,
+    #[error("User is not authorized")]
+    NotAuthorized,
+}
+
 impl SessionState {
     /// Sends a message to the client.
     /// If the send fails, logs an error.
@@ -172,6 +211,8 @@ impl SessionState {
             error!("Failed to send message to client: [{:?}] [{}]", msg, err);
         }
     }
+
+
 }
 
 #[axum::debug_handler]

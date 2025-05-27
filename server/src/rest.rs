@@ -52,7 +52,7 @@ pub struct ListQuery {
 
 /// Custom claims extractor to get only what you need, including email.
 #[derive(Debug, Deserialize, Clone)]
-struct UserEmailClaim {
+pub struct UserEmailClaim {
     email: String,
 }
 
@@ -67,9 +67,8 @@ pub async fn get_session_list(
     info!("Got email! [{}]", claims.email);
 
     let project_path = &app_state
-        .data_path
-        .join_safe(query.project_id)
-        .map_err(|_| RestError::new(StatusCode::BAD_REQUEST, "project_id not valid"))?;
+        .authorize_project_folder(&query.project_id, &claims.email).await
+        .map_err(|_| RestError::new(StatusCode::UNAUTHORIZED, "not authorized"))?;
 
     for entry in fs::read_dir(&project_path)? {
         let session_path = entry?.path();
@@ -103,11 +102,11 @@ pub struct SessionInfoQuery {
 pub async fn get_session_info(
     State(app_state): State<AppState>,
     Query(query): Query<SessionInfoQuery>,
+    claims: Extension<UserEmailClaim>
 ) -> Result<Json<SessionData>, RestError> {
     let metadata_path = app_state
-        .data_path
-        .join_safe(&query.project_id)
-        .map_err(|_| RestError::new(StatusCode::BAD_REQUEST, "project_id invalid"))?
+        .authorize_project_folder(&query.project_id, &claims.email).await
+        .map_err(|_| RestError::new(StatusCode::UNAUTHORIZED, "not authorized"))?
         .join_safe(&query.session_id)
         .map_err(|_| RestError::new(StatusCode::BAD_REQUEST, "session_id invalid"))?
         .join("metadata.json");
@@ -149,6 +148,9 @@ impl RestError {
     {
         RestError(status_code, body.into())
     }
+}
+
+fn authorize_access() {
 }
 
 // Internal server errors should print error but return simple message.
