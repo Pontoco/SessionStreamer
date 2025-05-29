@@ -18,7 +18,7 @@ async function fetchSessionData(sessionId: string, projectId: string, headers: {
   let url = `/rest/session?project_id=${projectId}&session_id=${sessionId}`;
   console.log(`Fetching session data from ${url}`);
   try {
-    const response = await fetch(url, { headers });
+    const response = await fetch(url);
     if (!response.ok) {
       console.error(`HTTP error! status: ${response.status} for URL ${url}`);
       return null;

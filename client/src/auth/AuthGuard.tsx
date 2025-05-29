@@ -99,7 +99,6 @@ export function OAuthCallbackPage() {
 
             localStorage.setItem(TOKEN_KEY, idToken);
             try {
-                const decoded = jwtDecode(idToken);
                 setAuthState(
                     produce((state) => {
                         state.isAuthenticated = true;
@@ -143,6 +142,9 @@ function clearNonce() {
 
 function storeToken(token) {
     localStorage.setItem(TOKEN_KEY, token);
+    document.cookie = `auth_token=${token}; path=/; secure; SameSite=Strict`;
+    console.log("Token stored in localStorage and cookie. ");
+    console.log(document.cookie);
     try {
         const decoded = jwtDecode(token);
         setAuthState(

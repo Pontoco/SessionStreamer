@@ -35,6 +35,7 @@ toml = "0.8.22"
 globset = "0.4.16"
 http-body-util = "0.1.3"
 locate-error = "0.1.1"
+cookie = "0.18.1"
 
 [dev-dependencies]
 axum-test = "17.3.0"

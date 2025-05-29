@@ -6,18 +6,19 @@ mod video_track;
 mod webrtc_utils;
 
 use anyhow::{Result, anyhow};
-use axum::{Extension, Router};
 use axum::body::Body;
 use axum::error_handling::HandleErrorLayer;
 use axum::extract::{self, Query, State};
 use axum::http::header::CONTENT_TYPE;
-use axum::http::{Request, StatusCode, header};
+use axum::http::{HeaderValue, Request, StatusCode, header};
 use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, get_service, post};
+use axum::{Extension, Router};
 use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
 use bytes::Bytes;
+use cookie::Cookie;
 use futures::{StreamExt, TryFutureExt};
 use http_body_util::BodyExt;
 use http_body_util::combinators::{BoxBody, UnsyncBoxBody};
@@ -45,9 +46,10 @@ use toml::Table;
 use tower::filter::FilterLayer;
 use tower::{BoxError, Service, ServiceBuilder, ServiceExt};
 use tower_http::body::Full;
+use tower_http::classify::ServerErrorsFailureClass;
 use tower_http::services::fs::ServeFileSystemResponseBody;
 use tower_http::services::{ServeDir, ServeFile};
-use tower_http::trace;
+use tower_http::trace::{self, DefaultOnRequest, DefaultOnResponse, TraceLayer};
 use tower_http::validate_request::{ValidateRequest, ValidateRequestHeaderLayer};
 use tower_oauth2_resource_server::server::OAuth2ResourceServer;
 use tower_oauth2_resource_server::tenant::TenantConfiguration;
@@ -251,29 +253,79 @@ pub async fn create_server(data_path: impl Into<PathBuf>, client_files: impl Int
 
     let dir = ServeDir::new(data_path.clone());
 
+    /// Axum middleware to extract a JWT from a cookie and set the Authorization header.
+    ///
+    /// It checks for a cookie named `auth_token` (you should change this name
+    /// to match your cookie). If found, and if the `Authorization` header
+    /// is not already present, it sets `Authorization: Bearer <token>`.
+    async fn auth_cookie_to_header(mut req: extract::Request, next: Next) -> Response {
+        let headers = req.headers_mut();
+        debug!("Rewriting headers from cookies");
+
+        // Only proceed if the Authorization header is NOT already set.
+        if !headers.contains_key(header::AUTHORIZATION) {
+            debug!("1 Rewriting headers from cookies");
+            // Try to get the cookie header.
+            if let Some(cookie_header) = headers.get(header::COOKIE) {
+                debug!("Got cookie");
+                // Convert the cookie header to a string.
+                if let Ok(cookie_str) = cookie_header.to_str() {
+                    debug!("cookie:{}", &cookie_str);
+                    // Define the name of the cookie to look for.
+                    const COOKIE_NAME: &str = "auth_token"; // <--- CHANGE THIS IF NEEDED
+
+                    // Iterate through cookies, parse them, and find the one we need.
+                    for cookie in Cookie::split_parse(cookie_str.to_string()) {
+                        match cookie {
+                            Err(err) => error!("Couldn't parse cookie: {}", err),
+                            Ok(cookie) => {
+                                if cookie.name() == COOKIE_NAME {
+                                    debug!("found token:{}", &cookie.value());
+                                    // ...try to create a "Bearer <token>" header value.
+                                    if let Ok(value) = HeaderValue::from_str(&format!("Bearer {}", cookie.value())) {
+                                        debug!("converted to auth:{:?}", &value);
+                                        // ...and insert it into the request headers.
+                                        headers.insert(header::AUTHORIZATION, value);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Pass the (potentially modified) request to the next middleware or handler.
+        next.run(req).await
+    }
+
     async fn middle(
         State(state): State<AppState>,
-        extract::Path(project_id): extract::Path<String>,
+        extract::Path((project_id, _)): extract::Path<(String, String)>,
         claims: Extension<UserEmailClaim>,
         request: extract::Request,
         next: Next,
     ) -> Response {
-        info!("Got email! [{}]", &claims.email);
-        if let Err(_) = state.authorize_project_folder(&project_id, &claims.email).await {
+        debug!("Authentication user for data access: {}", &claims.email);
+        if let Err(err) = state.authorize_project_folder(&project_id, &claims.email).await {
             // Request is not authorized, return our custom error
+            debug!("User [{}] is not authorized for project [{}]: {}", &claims.email, &project_id, err);
             return Response::builder()
                 .status(StatusCode::UNAUTHORIZED)
                 .header(CONTENT_TYPE, "text/plain; charset=utf-8")
-                .body(Body::from("Not authorized fool!")) // Use the error's message for the body
+                .body(Body::from("Not authorized!")) // Use the error's message for the body
                 .unwrap(); // Should not fail for a valid builder
         }
 
+        info!("authorized, passing through");
         return next.run(request).await;
     }
 
-    let layer = axum::middleware::from_fn_with_state(state.clone(), middle);
+    let auth_for_data_access = axum::middleware::from_fn_with_state(state.clone(), middle);
 
-    let authorized_data_layer = ServiceBuilder::new().layer(layer).service(dir); // Serve the static data from the sessions.
+    let authorized_data_layer = ServiceBuilder::new()
+        .layer(auth_for_data_access)
+        .service(dir); // Serve the static data from the sessions.
 
     let oauth2_resource_server = OAuth2ResourceServer::<UserEmailClaim>::builder()
         .add_tenant(
@@ -289,9 +341,10 @@ pub async fn create_server(data_path: impl Into<PathBuf>, client_files: impl Int
 
     // --- Routes requiring OAuth2 ---
     let protected_routes = Router::new()
-        .nest_service("/data", authorized_data_layer)
+        .nest("/data", Router::new().route_service("/{project_id}/{*path}", authorized_data_layer))
         .nest("/rest", rest::routes().await)
-        .layer(ServiceBuilder::new().layer(oauth2_resource_server.into_layer())); 
+        .layer(ServiceBuilder::new().layer(oauth2_resource_server.into_layer()))
+        .layer(axum::middleware::from_fn(auth_cookie_to_header));
 
     // --- Main application router ---
     Ok(Router::new()
@@ -300,12 +353,11 @@ pub async fn create_server(data_path: impl Into<PathBuf>, client_files: impl Int
         .fallback(get_service(
             ServeDir::new(&client_path).fallback(get_service(ServeFile::new(client_path.join_safe("index.html")?))),
         ))
-
         // --- Global Layers (Apply to ALL routes) ---
         .layer(
             trace::TraceLayer::new_for_http()
                 .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
-                .on_response(trace::DefaultOnResponse::new().level(Level::INFO)),
+                .on_response(trace::DefaultOnResponse::new().level(Level::INFO))
         )
         .with_state(state))
 }
