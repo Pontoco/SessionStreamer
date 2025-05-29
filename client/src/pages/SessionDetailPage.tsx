@@ -79,6 +79,7 @@ interface LogPaneProps {
   scrollWithVideo: Accessor<boolean>;
   setScrollWithVideo: Setter<boolean>;
   isLoading: Accessor<boolean>;
+  loadError: Accessor<string | null | undefined>;
 }
 
 function LogPane(props: LogPaneProps): JSX.Element {
@@ -195,10 +196,11 @@ function LogPane(props: LogPaneProps): JSX.Element {
           isLoading={props.isLoading}
           showTimestamps={props.showTimestamps}
           targetLogIndex={targetLogIndexToScroll}
-          placeholder={props.rawLogContent() === null && !props.isLoading() ? "Log file could not be loaded or is empty." : "No logs to display."}
+          placeholder={props.rawLogContent() === null && !props.isLoading() && !props.loadError() ? "Log file could not be loaded or is empty." : "No logs to display."}
+          loadError={props.loadError}
         />
       </div>
-      <Show when={!props.isLoading() && props.rawLogContent() === null && props.sessionMetadata()?.log_url}>
+      <Show when={!props.isLoading() && props.loadError() && props.sessionMetadata()?.log_url}>
         <p class="mt-2 text-sm text-neutral-500">Log file specified but could not be loaded.</p>
       </Show>
     </div>
@@ -409,6 +411,7 @@ export default function SessionDetailPage(): JSX.Element {
                       scrollWithVideo={scrollWithVideo}
                       setScrollWithVideo={setScrollWithVideo}
                       isLoading={() => rawLogContent.loading}
+                      loadError={() => rawLogContent.error}
                     />
                   </div>
                 </div>

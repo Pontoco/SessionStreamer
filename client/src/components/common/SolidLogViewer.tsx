@@ -12,6 +12,7 @@ export interface LogEntry {
 interface LogViewerProps extends ComponentProps<'div'> {
   logs: Accessor<LogEntry[]>; // Logs should be passed as an accessor (signal/prop)
   isLoading: Accessor<boolean>;
+  loadError?: Accessor<string | null | undefined>; // Optional: To display a load error message
   showTimestamps?: Accessor<boolean>; // Prop to control timestamp visibility
   containerHeight?: string; // e.g., "600px"
   placeholder?: string; // Placeholder when logs are empty
@@ -125,22 +126,36 @@ export function SolidLogViewer(props: LogViewerProps) {
         </div>
       </Show>
 
-      <div class="flex-grow overflow-y-scroll" style="contain: size; contain-intrinsic-size: 50px">
-        <For each={filteredLogs()}>
-          {(log: LogEntry, index) => (
-            <div id={"log-entry-" + index()}>
-              <Show when={defaultShowTimestamps() && log?.timestamp}>
-                <span class="mr-2.5 text-gray-500 whitespace-nowrap">
-                  {log ? formatTimestamp(log!.timestamp!) : ''}
-                </span>
-              </Show>
-              <span class="flex-grow whitespace-nowrap">
-                {log ? highlightMatch(log!.message, searchTerm()) : ''}
-              </span>
-            </div>
-          )}
-        </For>
-        test
+      <div class="flex-grow overflow-y-scroll p-2" style="contain: size; contain-intrinsic-size: 50px">
+        <Show when={props.loadError && props.loadError()}>
+          <div class="text-red-500 p-2">
+            Error loading logs: {props.loadError!()}
+          </div>
+        </Show>
+        <Show when={!props.loadError || !props.loadError()}>
+          <Show when={props.isLoading()}>
+            <div class="p-2 text-gray-500">Loading logs...</div>
+          </Show>
+          <Show when={!props.isLoading() && filteredLogs().length === 0}>
+            <div class="p-2 text-gray-500">{placeholderMessage()}</div>
+          </Show>
+          <Show when={!props.isLoading() && filteredLogs().length > 0}>
+            <For each={filteredLogs()}>
+              {(log: LogEntry, index) => (
+                <div id={"log-entry-" + index()} class="flex">
+                  <Show when={defaultShowTimestamps() && log?.timestamp}>
+                    <span class="mr-2.5 text-gray-500 whitespace-nowrap">
+                      {log ? formatTimestamp(log!.timestamp!) : ''}
+                    </span>
+                  </Show>
+                  <span class="flex-grow whitespace-nowrap">
+                    {log ? highlightMatch(log!.message, searchTerm()) : ''}
+                  </span>
+                </div>
+              )}
+            </For>
+          </Show>
+        </Show>
       </div>
 
 
