@@ -6,17 +6,27 @@ mod video_track;
 mod webrtc_utils;
 
 use anyhow::{Result, anyhow};
+use axum::{Extension, Router};
+use axum::body::Body;
 use axum::error_handling::HandleErrorLayer;
-use axum::extract::{Query, State};
-use axum::http::{StatusCode, header};
+use axum::extract::{self, Query, State};
+use axum::http::header::CONTENT_TYPE;
+use axum::http::{Request, StatusCode, header};
+use axum::middleware::{self, Next};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{get, get_service, post};
 use axum_extra::TypedHeader;
 use axum_extra::headers::ContentType;
+use bytes::Bytes;
 use futures::{StreamExt, TryFutureExt};
+use http_body_util::BodyExt;
+use http_body_util::combinators::{BoxBody, UnsyncBoxBody};
+use locate_error::Locate;
 use path_ext::PathExt;
 use serde::{Deserialize, Serialize};
+use std::backtrace;
 use std::collections::HashMap;
+use std::io::ErrorKind;
 use std::panic::Location;
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -32,8 +42,15 @@ use tokio::time::sleep;
 use tokio_stream::wrappers::WatchStream;
 use tokio_util::sync::CancellationToken;
 use toml::Table;
+use tower::filter::FilterLayer;
+use tower::{BoxError, Service, ServiceBuilder, ServiceExt};
+use tower_http::body::Full;
+use tower_http::services::fs::ServeFileSystemResponseBody;
 use tower_http::services::{ServeDir, ServeFile};
 use tower_http::trace;
+use tower_http::validate_request::{ValidateRequest, ValidateRequestHeaderLayer};
+use tower_oauth2_resource_server::server::OAuth2ResourceServer;
+use tower_oauth2_resource_server::tenant::TenantConfiguration;
 use tracing::{Instrument, Level, Span, debug, error, info};
 use tracing::{trace, warn};
 use tracing_subscriber::layer::SubscriberExt;
@@ -86,14 +103,13 @@ impl AppState {
             .ok_or(AuthError::RuleMalformed)?;
 
         for pattern in email_patterns {
-            let glob = globset::Glob::new(pattern.as_str().ok_or(AuthError::RuleMalformed)?)?
-                .compile_matcher();
+            let glob = globset::Glob::new(pattern.as_str().ok_or(AuthError::RuleMalformed)?)?.compile_matcher();
             if glob.is_match(email) {
                 return Ok(self.data_path.join_safe(project_id)?);
             }
         }
 
-        debug!("User did not pass email auth rules check");
+        debug!("User [{email}] is not authorized for project [{project_id}]");
         Err(AuthError::NotAuthorized)?
     }
 }
@@ -144,6 +160,68 @@ where
     }
 }
 
+// pub fn project_id_auth_service<S, ReqBody, RespBody>(
+//     inner_service: S,
+// ) -> impl Service<
+//     Request<ReqBody>,
+//     Response = Response<Body>, // The final response type is http::Response<Body>
+//     Error = BoxError,          // The final error type is BoxError due to Filter & MapResult
+// > + Clone
+// where
+//     S: Service<Request<ReqBody>, Response = Response<RespBody>, Error = BoxError> + Clone + Send + 'static,
+//     S::Error: Into<BoxError> + Send + Sync + 'static, // Inner service's error must be convertible
+//     S::Future: Send + 'static,
+//     ReqBody: Send + 'static,
+//     RespBody: Send + 'static
+// {
+//     // Hard-coded list of approved project IDs
+//     const APPROVED_PROJECT_IDS: &[&str] = &["proj_alpha", "proj_beta", "admin_proj"];
+
+//     ServiceBuilder::new()
+//         // Layer 1: Filter requests based on the project ID.
+//         // If the predicate returns Err, the Filter service errors with that specific error.
+//         .layer(FilterLayer::new(move |req: Request<ReqBody>| {
+//             let path = req.uri().path();
+//             let first_param = path.split_terminator('/').nth(1).unwrap_or_default();
+
+//             if APPROVED_PROJECT_IDS.contains(&first_param) {
+//                 Ok(req) // Request is authorized, pass it through
+//             } else {
+//                 // Request is not authorized, return our custom error
+//                 Err(Box::new(AuthError::NotAuthorized) as BoxError)
+//             }
+//         }))
+//         // Layer 2: Map the result of the Filtered service.
+//         // This layer catches our custom error and transforms it into a 401 HTTP Response.
+//         .map_result(|result: Result<Response<RespBody>, BoxError>| {
+//             match result {
+//                 Ok(response) => Ok(response), // Pass through successful responses
+//                 Err(err) => {
+//                     // Check if the error is our specific UnauthorizedByProjectIdError
+//                     if err.is::<AuthError>() {
+//                         // Transform the custom error into a 401 HTTP Response
+//                         let response_401 = Response::builder()
+//                             .status(StatusCode::UNAUTHORIZED)
+//                             .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+//                             .body(Body::from(err.to_string())) // Use the error's message for the body
+//                             .unwrap(); // Should not fail for a valid builder
+//                         Ok(response_401)
+//                     } else {
+//                         // It's a different error (e.g., from the inner_service), propagate it.
+//                         Err(err)
+//                     }
+//                 }
+//             }
+//         })
+//         // Apply the layers to the inner service
+//         .service(inner_service)
+// }
+/// Custom claims extractor to get only what you need, including email.
+#[derive(Debug, Deserialize, Clone)]
+pub struct UserEmailClaim {
+    email: String,
+}
+
 pub async fn create_server(data_path: impl Into<PathBuf>, client_files: impl Into<PathBuf>) -> Result<axum::Router> {
     let mut m = MediaEngine::default();
 
@@ -166,16 +244,64 @@ pub async fn create_server(data_path: impl Into<PathBuf>, client_files: impl Int
         data_path: data_path.clone(),
     };
 
+    // Create an auth layer
+
     let client_path = client_files.into();
     info!("Serving client on route: [{}]", &client_path.display());
 
-    Ok(axum::Router::new()
-        .nest_service("/data", ServeDir::new(data_path)) // Serve the static data from the sessions.
-        .route("/whip", post(whip_post_handler)) // Serve the WHIP Api
-        .nest("/rest", rest::routes().await) // Serve the REST Api
+    let dir = ServeDir::new(data_path.clone());
+
+    async fn middle(
+        State(state): State<AppState>,
+        extract::Path(project_id): extract::Path<String>,
+        claims: Extension<UserEmailClaim>,
+        request: extract::Request,
+        next: Next,
+    ) -> Response {
+        info!("Got email! [{}]", &claims.email);
+        if let Err(_) = state.authorize_project_folder(&project_id, &claims.email).await {
+            // Request is not authorized, return our custom error
+            return Response::builder()
+                .status(StatusCode::UNAUTHORIZED)
+                .header(CONTENT_TYPE, "text/plain; charset=utf-8")
+                .body(Body::from("Not authorized fool!")) // Use the error's message for the body
+                .unwrap(); // Should not fail for a valid builder
+        }
+
+        return next.run(request).await;
+    }
+
+    let layer = axum::middleware::from_fn_with_state(state.clone(), middle);
+
+    let authorized_data_layer = ServiceBuilder::new().layer(layer).service(dir); // Serve the static data from the sessions.
+
+    let oauth2_resource_server = OAuth2ResourceServer::<UserEmailClaim>::builder()
+        .add_tenant(
+            TenantConfiguration::builder(format!("https://accounts.google.com"))
+                .audiences(&["250832464539-0m471qro1qad8108jel2kqu3dbcaldii.apps.googleusercontent.com"])
+                .build()
+                .await
+                .expect("Failed to build tenant configuration"),
+        )
+        .build()
+        .await
+        .expect("Failed to build OAuth2 resource server");
+
+    // --- Routes requiring OAuth2 ---
+    let protected_routes = Router::new()
+        .nest_service("/data", authorized_data_layer)
+        .nest("/rest", rest::routes().await)
+        .layer(ServiceBuilder::new().layer(oauth2_resource_server.into_layer())); 
+
+    // --- Main application router ---
+    Ok(Router::new()
+        .route("/whip", post(whip_post_handler)) // WHIP route - NO OAuth2
+        .merge(protected_routes) // Merge the protected routes
         .fallback(get_service(
             ServeDir::new(&client_path).fallback(get_service(ServeFile::new(client_path.join_safe("index.html")?))),
         ))
+
+        // --- Global Layers (Apply to ALL routes) ---
         .layer(
             trace::TraceLayer::new_for_http()
                 .make_span_with(trace::DefaultMakeSpan::new().level(Level::INFO))
@@ -211,8 +337,6 @@ impl SessionState {
             error!("Failed to send message to client: [{:?}] [{}]", msg, err);
         }
     }
-
-
 }
 
 #[axum::debug_handler]
@@ -258,7 +382,9 @@ async fn whip_post_handler(
             format!("Session ID already exists! [{}] path: [{:?}]", &session_id, &data_path),
         ))?;
     }
-    fs::create_dir(&data_path).await?;
+
+    debug!("Creating session directory: {}", data_path.display());
+    fs::create_dir_all(&data_path).await?;
 
     info!(
         "Created new game streaming session. project={} session={} path={}",
@@ -673,17 +799,17 @@ fn supported_codecs() -> Vec<RTCRtpCodecParameters> {
 // Error handling
 // -----
 
-#[derive(Error, Debug)]
+#[derive(Error, Debug, Locate)]
 enum AppError {
     #[error("{}", 1)]
     Manual(StatusCode, String),
-    #[error("webrtc error")]
-    WebRtc(#[from] webrtc::Error),
-    #[error("io error")]
-    Io(#[from] std::io::Error),
-    #[error("http error")]
+    #[error("webrtc error: {0}")]
+    WebRtc(#[locate_from] webrtc::Error, locate_error::Location),
+    #[error("io error: {0}")]
+    Io(#[locate_from] std::io::Error, locate_error::Location),
+    #[error("http error: {0}")]
     Http(#[from] axum::http::Error),
-    #[error("serde error")]
+    #[error("serde error: {0}")]
     Serde(#[from] serde_json::Error),
 }
 
@@ -710,6 +836,7 @@ impl From<&str> for AppError {
 
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
+        error!("into: {:?}", self);
         match self {
             AppError::Manual(status_code, msg) => (status_code, msg).into_response(),
             e => (StatusCode::INTERNAL_SERVER_ERROR, format!("Internal Server Error: {}", e)).into_response(),

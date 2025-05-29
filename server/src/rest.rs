@@ -20,28 +20,16 @@ use tower_oauth2_resource_server::server::OAuth2ResourceServer;
 use tower_oauth2_resource_server::tenant::TenantConfiguration;
 use tracing::{debug, error, info, warn};
 
-use crate::AppState;
+use crate::{AppState, UserEmailClaim};
 use crate::path_ext::PathExt;
 
 type SessionMetadata = serde_json::Value;
 
 pub async fn routes() -> Router<AppState> {
-    let oauth2_resource_server = OAuth2ResourceServer::<UserEmailClaim>::builder()
-        .add_tenant(
-            TenantConfiguration::builder(format!("https://accounts.google.com"))
-            .audiences(&["250832464539-0m471qro1qad8108jel2kqu3dbcaldii.apps.googleusercontent.com"])
-            .build()
-            .await
-            .expect("Failed to build tenant configuration"),
-        )
-        .build()
-        .await
-        .expect("Failed to build OAuth2 resource server");
 
     Router::new()
         .route("/session", get(get_session_info))
         .route("/list", get(get_session_list))
-        .layer(ServiceBuilder::new().layer(oauth2_resource_server.into_layer()))
         .fallback(async || StatusCode::NOT_FOUND)
 }
 
@@ -50,11 +38,6 @@ pub struct ListQuery {
     pub project_id: String,
 }
 
-/// Custom claims extractor to get only what you need, including email.
-#[derive(Debug, Deserialize, Clone)]
-pub struct UserEmailClaim {
-    email: String,
-}
 
 /// Gets a list of all sessions under this project. Returns each session's metadata json object.
 pub async fn get_session_list(
@@ -68,8 +51,10 @@ pub async fn get_session_list(
 
     let project_path = &app_state
         .authorize_project_folder(&query.project_id, &claims.email).await
+        .inspect_err(|err| error!("{}", err))
         .map_err(|_| RestError::new(StatusCode::UNAUTHORIZED, "not authorized"))?;
 
+    debug!("Listing sessions from project path: [{}]", project_path.display());
     for entry in fs::read_dir(&project_path)? {
         let session_path = entry?.path();
         if session_path.is_dir() {
@@ -148,9 +133,6 @@ impl RestError {
     {
         RestError(status_code, body.into())
     }
-}
-
-fn authorize_access() {
 }
 
 // Internal server errors should print error but return simple message.

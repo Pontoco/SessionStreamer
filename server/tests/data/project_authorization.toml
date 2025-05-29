@@ -2,3 +2,8 @@
 authorized_emails = [
     "*@pontoco.com"
 ]
+
+[testproject]
+authorized_emails = [
+    "*@*"
+]
